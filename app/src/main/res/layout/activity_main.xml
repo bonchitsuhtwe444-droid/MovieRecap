@@ -28,14 +28,19 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="12dp"
-            android:text="၂။ Vosk Model (zip) — တစ်ကြိမ်ပဲ ရွေးရမယ်"
+            android:text="၂။ ဇာတ်ကားထဲက စကားပြောဘာသာစကား (Model ကို အလိုအလျောက် ဒေါင်းမယ်)"
             android:textStyle="bold" />
+
+        <Spinner
+            android:id="@+id/spLang"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content" />
 
         <Button
             android:id="@+id/btnModel"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Model zip ရွေးမယ်" />
+            android:text="တခြားဘာသာ model zip ကိုယ်တိုင်ရွေးမယ် (မလိုရင် ကျော်ပါ)" />
 
         <TextView
             android:id="@+id/tvModel"
