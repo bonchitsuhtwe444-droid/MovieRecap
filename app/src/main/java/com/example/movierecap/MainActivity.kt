@@ -155,13 +155,13 @@ class MainActivity : AppCompatActivity() {
 
     // (code, ပြမယ့်နာမည်, vosk model နာမည်)
     private val langs = listOf(
-        Triple("en", "English (အင်္ဂလိပ်)", "vosk-model-small-en-us-0.15"),
-        Triple("cn", "Chinese (တရုတ်)", "vosk-model-small-cn-0.22"),
-        Triple("fr", "French (ပြင်သစ်)", "vosk-model-small-fr-0.22"),
-        Triple("de", "German (ဂျာမန်)", "vosk-model-small-de-0.15"),
-        Triple("es", "Spanish (စပိန်)", "vosk-model-small-es-0.42"),
-        Triple("ru", "Russian (ရုရှား)", "vosk-model-small-ru-0.22"),
-        Triple("pt", "Portuguese (ပေါ်တူဂီ)", "vosk-model-small-pt-0.3")
+        Triple("en", "English", "vosk-model-small-en-us-0.15"),
+        Triple("cn", "Chinese", "vosk-model-small-cn-0.22"),
+        Triple("fr", "French", "vosk-model-small-fr-0.22"),
+        Triple("de", "German", "vosk-model-small-de-0.15"),
+        Triple("es", "Spanish", "vosk-model-small-es-0.42"),
+        Triple("ru", "Russian", "vosk-model-small-ru-0.22"),
+        Triple("pt", "Portuguese", "vosk-model-small-pt-0.3")
     )
 
     private val pickVideo = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
@@ -331,7 +331,7 @@ class MainActivity : AppCompatActivity() {
         colA.addView(spLang, lp(MATCH, dp(42), t = 4))
         val colB = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         colB.addView(label("မြန်မာ အသံ"))
-        spVoice = spinner(listOf("Nilar · အမျိုးသမီး", "Thiha · အမျိုးသား"))
+        spVoice = spinner(listOf("Nilar · မ", "Thiha · ကျား"))
         colB.addView(spVoice, lp(MATCH, dp(42), t = 4))
         c2.addView(colA, lp(0, WRAP, 1f, r = 5))
         c2.addView(colB, lp(0, WRAP, 1f, l = 5))
@@ -585,6 +585,7 @@ class MainActivity : AppCompatActivity() {
                     throw e
                 } catch (e: Exception) {
                     setStatus("⚠️ Edge မရလို့ Google အသံနဲ့ စမ်းပါတယ် (အမြန်နှုန်း/pitch မပါ)")
+                    showReport("Edge TTS မရပါ — အကြောင်းရင်း", EdgeTts.lastReport.ifEmpty { e.message.orEmpty() })
                     GoogleTts.synthesize(sample)
                 }
                 val f = File(cacheDir, "preview.mp3")
@@ -609,6 +610,25 @@ class MainActivity : AppCompatActivity() {
                 if (!busy) btnPreview.isEnabled = true
             }
         }
+    }
+
+    private fun showReport(title: String, text: String) {
+        val tv = TextView(this).apply {
+            this.text = text
+            textSize = 12f
+            setTextIsSelectable(true)
+            setPadding(dp(20), dp(8), dp(20), dp(8))
+        }
+        val sc = ScrollView(this).apply { addView(tv) }
+        AlertDialog.Builder(this)
+            .setTitle(title)
+            .setView(sc)
+            .setPositiveButton("Copy") { _, _ ->
+                val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                cm.setPrimaryClip(ClipData.newPlainText("report", text))
+            }
+            .setNegativeButton("ပိတ်မယ်", null)
+            .show()
     }
 
     private fun edgeOverride(): String {
@@ -708,8 +728,9 @@ class MainActivity : AppCompatActivity() {
             throw e
         } catch (e: Exception) {
             useEdge = false
-            setStatus("⚠️ Edge TTS မရလို့ Google အသံနဲ့ ဆက်လုပ်ပါမယ်")
-            delay(1500)
+            File(filesDir, "edge_report.txt").writeText(EdgeTts.lastReport)
+            setStatus("⚠️ Edge TTS မရလို့ Google အသံနဲ့ ဆက်လုပ်ပါမယ် — ${e.message}")
+            delay(2500)
         }
 
         val narrationBytes = ByteArrayOutputStream()
@@ -760,8 +781,8 @@ The dialogue may be in English or another language and may contain speech-recogn
 Task: Write a recap narration of the whole video in natural spoken Burmese (မြန်မာဘာသာ), in the style of popular movie-recap YouTube channels. Tone: exciting and engaging.
 Rules:
 - Total length: about $minutes minutes when read aloud (about ${minutes * 550} Burmese characters).
-- Split the narration into ${(minutes * 2).coerceIn(8, 40)} consecutive segments in story order.
-- For each segment, give the start and end time in seconds (decimals allowed) of the part of the video where those exact events happen, using the transcript timestamps. Ranges must be accurate and must not overlap.
+- Split the narration into about ${(minutes * 5).coerceIn(10, 80)} short consecutive segments in story order. Each segment is 1-2 sentences (roughly 8-15 seconds when read aloud) and covers ONE specific scene or moment.
+- For each segment, give the start and end time in seconds (decimals allowed) of that exact scene in the video, using the transcript timestamps. Ranges must be accurate, in increasing order, and must not overlap. The range length should be roughly similar to the time needed to read the segment aloud.
 - Plain spoken Burmese only. No bullet points, no markdown, no emojis, no English except character names.
 Output ONLY a JSON array like: [{"text":"...","start":123.4,"end":170.0}]
 
@@ -789,7 +810,11 @@ $transcript
         return out
     }
 
-    /** Script တစ်ပိုင်းစီအတွက် ဇာတ်ကားထဲက သက်ဆိုင်ရာ scene ကို အသံကြာချိန်နဲ့ အတိအကျ ကိုက်အောင် ဖြတ်တယ် */
+    /**
+     * Script တစ်ပိုင်းစီအတွက် scene ကို ဖြတ်ပြီး အမြန်နှုန်း ချိန်ညှိတယ်။
+     * Narration ရှည်ရင် video နှေးမယ်၊ scene ရှည်ပြီး narration တိုရင် video မြန်မယ်။
+     * ထွက်လာမယ့် ကြာချိန် = narration ကြာချိန် အတိအကျ။
+     */
     private fun planClips(
         segs: List<GeminiClient.Seg>,
         durs: List<Long>,
@@ -806,27 +831,17 @@ $transcript
                 eMs = sMs + d
             }
             if (movieMs > 0) eMs = eMs.coerceAtMost(movieMs)
-            val range = eMs - sMs
-            if (range >= d * 3 / 2 && d >= 9000) {
-                // ဒီအပိုင်းရဲ့ scene အကွာအဝေးတစ်ခုလုံးကို လွှမ်းအောင် clip အတိုလေးတွေ ပြန့်ယူ
-                val n = (d / 6000).toInt().coerceIn(2, 4)
-                val base = d / n
-                for (j in 0 until n) {
-                    val len = if (j == n - 1) d - base * (n - 1) else base
-                    val st = sMs + (range - len) * j / (n - 1)
-                    out.add(clampClip(st, len, movieMs))
-                }
-            } else {
-                out.add(clampClip(sMs, d, movieMs))
-            }
+            val range = (eMs - sMs).coerceAtLeast(500L)
+
+            var speed = (range.toDouble() / d).coerceIn(0.6, 2.5)
+            if (speed in 0.95..1.05) speed = 1.0
+            val srcLen = (d * speed).toLong()
+
+            var st = sMs
+            if (movieMs > 0 && st + srcLen > movieMs) st = (movieMs - srcLen).coerceAtLeast(0L)
+            out.add(VideoMerger.Clip(st, st + srcLen, speed.toFloat()))
         }
         return out
-    }
-
-    private fun clampClip(start: Long, len: Long, movieMs: Long): VideoMerger.Clip {
-        var st = start.coerceAtLeast(0L)
-        if (movieMs > 0 && st + len > movieMs) st = (movieMs - len).coerceAtLeast(0L)
-        return VideoMerger.Clip(st, st + len)
     }
 
     private fun mp3DurationMs(f: File): Long? = try {
