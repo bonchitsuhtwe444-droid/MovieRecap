@@ -14,13 +14,12 @@ import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.IOException
+import java.util.Locale
 import java.util.concurrent.TimeUnit
 import java.util.zip.ZipInputStream
 
 object VoskTranscriber {
 
-
-    /** Model zip ကို အင်တာနက်ကနေ ဒေါင်းတယ် */
     fun download(context: Context, url: String, onProgress: (Int) -> Unit): File {
         val client = OkHttpClient.Builder()
             .connectTimeout(30, TimeUnit.SECONDS)
@@ -55,7 +54,6 @@ object VoskTranscriber {
         return out
     }
 
-    /** Model zip ကို ဖြေပြီး destDir ထဲ ထည့်ပေးတယ် */
     fun installModelZip(context: Context, zipUri: Uri, destDir: File) {
         val tmp = File(context.filesDir, "vosk_tmp")
         tmp.deleteRecursively()
@@ -95,12 +93,30 @@ object VoskTranscriber {
     fun isModelReady(dir: File): Boolean =
         dir.isDirectory && File(dir, "conf").exists()
 
-    /** 16kHz mono WAV ကို စာသားပြောင်းပြီး "[စတင်-ပြီး] စာသား" လိုင်းတွေ ပြန်ပေးတယ် */
+    private fun fmt(d: Double): String = String.format(Locale.US, "%.1f", d)
+
+    /** 16kHz mono WAV → "[စတင်-ပြီး] စာသား" လိုင်းများ (စက္ကန့်၊ ဒသမ ၁ နေရာ) */
     fun transcribe(modelDir: File, wav: File, onProgress: (Int) -> Unit): String {
         LibVosk.setLogLevel(LogLevel.WARNINGS)
         val model = Model(modelDir.absolutePath)
         val rec = Recognizer(model, 16000.0f)
+        rec.setWords(true)
         val sb = StringBuilder()
+
+        fun addLine(json: String, fallbackStart: Double, fallbackEnd: Double) {
+            val j = JSONObject(json)
+            val t = j.optString("text")
+            if (t.isBlank()) return
+            var st = fallbackStart
+            var en = fallbackEnd
+            val arr = j.optJSONArray("result")
+            if (arr != null && arr.length() > 0) {
+                st = arr.getJSONObject(0).optDouble("start", fallbackStart)
+                en = arr.getJSONObject(arr.length() - 1).optDouble("end", fallbackEnd)
+            }
+            sb.append("[${fmt(st)}-${fmt(en)}] $t\n")
+        }
+
         try {
             val total = (wav.length() - 44).coerceAtLeast(1)
             var segStart = 0.0
@@ -115,10 +131,7 @@ object VoskTranscriber {
                     read += n
                     val now = read / 32000.0
                     if (rec.acceptWaveForm(buf, n)) {
-                        val t = JSONObject(rec.result).optString("text")
-                        if (t.isNotBlank()) {
-                            sb.append("[${segStart.toInt()}-${now.toInt()}] $t\n")
-                        }
+                        addLine(rec.result, segStart, now)
                         segStart = now
                     }
                     val pct = (read * 100 / total).toInt().coerceIn(0, 100)
@@ -128,10 +141,7 @@ object VoskTranscriber {
                     }
                 }
             }
-            val last = JSONObject(rec.finalResult).optString("text")
-            if (last.isNotBlank()) {
-                sb.append("[${segStart.toInt()}-${(read / 32000.0).toInt()}] $last\n")
-            }
+            addLine(rec.finalResult, segStart, read / 32000.0)
         } finally {
             rec.close()
             model.close()
