@@ -1,24 +1,47 @@
 package com.example.movierecap
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
+import android.content.res.ColorStateList
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.LinearGradient
+import android.graphics.Paint
+import android.graphics.Path
+import android.graphics.RectF
+import android.graphics.Shader
+import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.StateListDrawable
 import android.media.MediaMetadataRetriever
+import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
 import android.provider.MediaStore
+import android.provider.OpenableColumns
+import android.text.InputType
+import android.text.TextUtils
+import android.view.Gravity
 import android.view.View
+import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.EditText
+import android.widget.LinearLayout
 import android.widget.ProgressBar
+import android.widget.ScrollView
+import android.widget.SeekBar
 import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.CancellationException
@@ -28,24 +51,107 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.util.Locale
+import kotlin.math.roundToInt
+
+/** DS Recap Tool — Developed by Dexter Syntax */
+class LogoView(context: Context) : View(context) {
+    private val p = Paint(Paint.ANTI_ALIAS_FLAG)
+
+    override fun onDraw(c: Canvas) {
+        val u = minOf(width, height) / 108f
+        c.save()
+        c.scale(u, u)
+
+        p.style = Paint.Style.FILL
+        p.shader = LinearGradient(0f, 0f, 108f, 108f, Color.parseColor("#3A3D47"), Color.parseColor("#14151A"), Shader.TileMode.CLAMP)
+        c.drawRoundRect(RectF(0f, 0f, 108f, 108f), 24f, 24f, p)
+
+        val inner = Path().apply {
+            moveTo(54f, 25f); lineTo(79f, 39.5f); lineTo(79f, 68.5f)
+            lineTo(54f, 83f); lineTo(29f, 68.5f); lineTo(29f, 39.5f); close()
+        }
+        p.shader = null
+        p.color = Color.parseColor("#33FFFFFF")
+        c.drawPath(inner, p)
+
+        val ring = Path().apply {
+            moveTo(54f, 22f); lineTo(81.7f, 38f); lineTo(81.7f, 70f)
+            lineTo(54f, 86f); lineTo(26.3f, 70f); lineTo(26.3f, 38f); close()
+        }
+        p.style = Paint.Style.STROKE
+        p.strokeWidth = 3f
+        p.strokeJoin = Paint.Join.ROUND
+        p.shader = LinearGradient(26f, 22f, 82f, 86f, Color.WHITE, Color.parseColor("#B5B9C4"), Shader.TileMode.CLAMP)
+        c.drawPath(ring, p)
+
+        val d = Path().apply {
+            fillType = Path.FillType.EVEN_ODD
+            moveTo(33f, 40f); lineTo(40f, 40f)
+            arcTo(RectF(30f, 40f, 50f, 68f), -90f, 180f)
+            lineTo(33f, 68f); close()
+            moveTo(38f, 46f); lineTo(38f, 62f); lineTo(46f, 54f); close()
+        }
+        p.style = Paint.Style.FILL
+        p.shader = LinearGradient(0f, 40f, 0f, 68f, Color.WHITE, Color.parseColor("#C4C8D2"), Shader.TileMode.CLAMP)
+        c.drawPath(d, p)
+
+        val s = Path().apply {
+            moveTo(73f, 42.5f); lineTo(58.5f, 42.5f); lineTo(58.5f, 52f)
+            lineTo(71f, 52f); lineTo(71f, 65.5f); lineTo(56f, 65.5f)
+        }
+        p.shader = null
+        p.style = Paint.Style.STROKE
+        p.strokeWidth = 4.5f
+        p.strokeCap = Paint.Cap.SQUARE
+        p.strokeJoin = Paint.Join.MITER
+        p.color = Color.parseColor("#EDEFF3")
+        c.drawPath(s, p)
+        c.restore()
+    }
+}
 
 class MainActivity : AppCompatActivity() {
+
+    private companion object {
+        val C_CHAR = Color.parseColor("#1F2127")
+        val C_CHAR2 = Color.parseColor("#3A3D47")
+        val C_BG1 = Color.parseColor("#F5F6F8")
+        val C_BG2 = Color.parseColor("#DEDFE5")
+        val C_STROKE = Color.parseColor("#D0D3DA")
+        val C_INPUT = Color.parseColor("#F4F5F8")
+        val C_TEXT = Color.parseColor("#1F2127")
+        val C_TEXT2 = Color.parseColor("#6B6F7B")
+        val C_ACCENT = Color.parseColor("#4A5062")
+        val C_PLAT = Color.parseColor("#F2F3F6")
+        const val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
+        const val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
+    }
 
     private var videoUri: Uri? = null
     private var outUri: Uri? = null
     private var busy = false
+    private var player: MediaPlayer? = null
 
     private val prefs by lazy { getSharedPreferences("recap", Context.MODE_PRIVATE) }
     private val modelDir by lazy { File(filesDir, "vosk_model") }
 
-    private val etApiKey by lazy { findViewById<EditText>(R.id.etApiKey) }
-    private val etTitle by lazy { findViewById<EditText>(R.id.etTitle) }
-    private val etMinutes by lazy { findViewById<EditText>(R.id.etMinutes) }
-    private val etTone by lazy { findViewById<EditText>(R.id.etTone) }
-    private val etGeminiModel by lazy { findViewById<EditText>(R.id.etGeminiModel) }
-    private val etEdgeVersion by lazy { findViewById<EditText>(R.id.etEdgeVersion) }
-    private val spVoice by lazy { findViewById<Spinner>(R.id.spVoice) }
-    private val spLang by lazy { findViewById<Spinner>(R.id.spLang) }
+    private lateinit var etApiKey: EditText
+    private lateinit var spLang: Spinner
+    private lateinit var spVoice: Spinner
+    private lateinit var sbSpeed: SeekBar
+    private lateinit var sbPitch: SeekBar
+    private lateinit var tvSpeed: TextView
+    private lateinit var tvPitch: TextView
+    private lateinit var btnPreview: Button
+    private lateinit var btnVideo: Button
+    private lateinit var tvVideo: TextView
+    private lateinit var btnGenerate: Button
+    private lateinit var btnOpen: Button
+    private lateinit var progress: ProgressBar
+    private lateinit var tvStatus: TextView
+    private lateinit var tvScript: TextView
+    private lateinit var btnSettings: TextView
 
     // (code, ပြမယ့်နာမည်, vosk model နာမည်)
     private val langs = listOf(
@@ -57,56 +163,321 @@ class MainActivity : AppCompatActivity() {
         Triple("ru", "Russian (ရုရှား)", "vosk-model-small-ru-0.22"),
         Triple("pt", "Portuguese (ပေါ်တူဂီ)", "vosk-model-small-pt-0.3")
     )
-    private val btnModel by lazy { findViewById<Button>(R.id.btnModel) }
-    private val btnVideo by lazy { findViewById<Button>(R.id.btnVideo) }
-    private val btnGenerate by lazy { findViewById<Button>(R.id.btnGenerate) }
-    private val btnOpen by lazy { findViewById<Button>(R.id.btnOpen) }
-    private val tvModel by lazy { findViewById<TextView>(R.id.tvModel) }
-    private val tvVideo by lazy { findViewById<TextView>(R.id.tvVideo) }
-    private val tvStatus by lazy { findViewById<TextView>(R.id.tvStatus) }
-    private val tvLog by lazy { findViewById<TextView>(R.id.tvLog) }
-    private val progress by lazy { findViewById<ProgressBar>(R.id.progress) }
 
     private val pickVideo = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null) {
             videoUri = uri
-            tvVideo.text = "ရွေးထားပြီ ✅"
+            tvVideo.text = fileName(uri)
             refreshButtons()
         }
     }
 
-    private val pickModel = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        if (uri != null) installModel(uri)
+    // ------------------------------------------------------------------ UI
+    private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
+
+    private fun lp(w: Int, h: Int, weight: Float = 0f, l: Int = 0, t: Int = 0, r: Int = 0, b: Int = 0) =
+        LinearLayout.LayoutParams(w, h, weight).apply { setMargins(dp(l), dp(t), dp(r), dp(b)) }
+
+    private fun rounded(color: Int, radius: Int, strokeW: Int = 0, strokeColor: Int = 0) =
+        GradientDrawable().apply {
+            setColor(color)
+            cornerRadius = radius.toFloat()
+            if (strokeW > 0) setStroke(strokeW, strokeColor)
+        }
+
+    private fun grad(c1: Int, c2: Int, radius: Int, strokeW: Int = 0, strokeColor: Int = 0) =
+        GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(c1, c2)).apply {
+            cornerRadius = radius.toFloat()
+            if (strokeW > 0) setStroke(strokeW, strokeColor)
+        }
+
+    private fun card() = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        background = rounded(Color.WHITE, dp(16), dp(1), C_STROKE)
+        setPadding(dp(12), dp(10), dp(12), dp(10))
     }
 
+    private fun label(t: String) = TextView(this).apply {
+        text = t
+        textSize = 10f
+        setTextColor(C_TEXT2)
+        typeface = Typeface.DEFAULT_BOLD
+        letterSpacing = 0.06f
+    }
+
+    private fun styledButton(text: String, primary: Boolean): Button {
+        val b = Button(this)
+        b.text = text
+        b.isAllCaps = false
+        b.stateListAnimator = null
+        b.textSize = 14f
+        b.typeface = Typeface.DEFAULT_BOLD
+        b.setTextColor(if (primary) C_PLAT else C_TEXT)
+        val normal = if (primary) grad(C_CHAR2, C_CHAR, dp(14))
+        else grad(Color.WHITE, Color.parseColor("#E3E4E9"), dp(14), dp(1), Color.parseColor("#C5C8D0"))
+        val pressed = if (primary) grad(C_CHAR, Color.BLACK, dp(14))
+        else grad(Color.parseColor("#E3E4E9"), Color.parseColor("#CFD1D8"), dp(14), dp(1), Color.parseColor("#C5C8D0"))
+        val disabled = rounded(Color.parseColor("#C9CBD3"), dp(14))
+        val sl = StateListDrawable()
+        sl.addState(intArrayOf(-android.R.attr.state_enabled), disabled)
+        sl.addState(intArrayOf(android.R.attr.state_pressed), pressed)
+        sl.addState(intArrayOf(), normal)
+        b.background = sl
+        b.setPadding(dp(14), 0, dp(14), 0)
+        return b
+    }
+
+    private fun makeAdapter(items: List<String>) = object : ArrayAdapter<String>(
+        this, android.R.layout.simple_spinner_item, items
+    ) {
+        override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
+            val tv = (convertView as? TextView) ?: TextView(context)
+            tv.text = getItem(position)
+            tv.setTextColor(C_TEXT)
+            tv.textSize = 14f
+            tv.setSingleLine()
+            tv.ellipsize = TextUtils.TruncateAt.END
+            tv.gravity = Gravity.CENTER_VERTICAL
+            tv.setPadding(dp(12), 0, dp(8), 0)
+            tv.setCompoundDrawablesWithIntrinsicBounds(0, 0, android.R.drawable.arrow_down_float, 0)
+            return tv
+        }
+
+        override fun getDropDownView(position: Int, convertView: View?, parent: ViewGroup): View {
+            val tv = TextView(context)
+            tv.text = getItem(position)
+            tv.setTextColor(C_TEXT)
+            tv.textSize = 15f
+            tv.setPadding(dp(16), dp(13), dp(16), dp(13))
+            tv.setBackgroundColor(Color.WHITE)
+            return tv
+        }
+    }
+
+    private fun spinner(items: List<String>): Spinner = Spinner(this).apply {
+        adapter = makeAdapter(items)
+        background = rounded(C_INPUT, dp(10), dp(1), C_STROKE)
+    }
+
+    private fun buildUi(): View {
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(C_BG1, C_BG2))
+        }
+
+        // ---- header
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(16), dp(12), dp(12), dp(14))
+            val r = dp(22).toFloat()
+            background = GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, intArrayOf(C_CHAR, C_CHAR2)).apply {
+                cornerRadii = floatArrayOf(0f, 0f, 0f, 0f, r, r, r, r)
+            }
+        }
+        header.addView(LogoView(this), lp(dp(46), dp(46)))
+        val titles = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        titles.addView(TextView(this).apply {
+            text = "DS Recap Tool"
+            textSize = 20f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(C_PLAT)
+        })
+        titles.addView(TextView(this).apply {
+            text = "Developed by Dexter Syntax"
+            textSize = 11f
+            setTextColor(Color.parseColor("#A9AEBA"))
+            letterSpacing = 0.04f
+        })
+        header.addView(titles, lp(0, WRAP, 1f, l = 12))
+        btnSettings = TextView(this).apply {
+            text = "⚙"
+            textSize = 24f
+            setTextColor(Color.parseColor("#C9CCD6"))
+            gravity = Gravity.CENTER
+            setPadding(dp(10), dp(4), dp(10), dp(4))
+        }
+        header.addView(btnSettings, lp(WRAP, WRAP))
+        root.addView(header, LinearLayout.LayoutParams(MATCH, WRAP))
+
+        // ---- body
+        val body = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(12), dp(2), dp(12), dp(12))
+        }
+        root.addView(body, LinearLayout.LayoutParams(MATCH, 0, 1f))
+
+        // API key
+        val c1 = card()
+        c1.addView(label("GEMINI API KEY"))
+        etApiKey = EditText(this).apply {
+            hint = "AIza..."
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+            setSingleLine()
+            textSize = 14f
+            setTextColor(C_TEXT)
+            setHintTextColor(Color.parseColor("#9A9EAA"))
+            background = rounded(C_INPUT, dp(10), dp(1), C_STROKE)
+            setPadding(dp(12), 0, dp(12), 0)
+        }
+        c1.addView(etApiKey, lp(MATCH, dp(42), t = 4))
+        body.addView(c1, lp(MATCH, WRAP, t = 8))
+
+        // language + voice
+        val c2 = card().apply { orientation = LinearLayout.HORIZONTAL }
+        val colA = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        colA.addView(label("ဇာတ်ကား ဘာသာစကား"))
+        spLang = spinner(langs.map { it.second })
+        colA.addView(spLang, lp(MATCH, dp(42), t = 4))
+        val colB = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        colB.addView(label("မြန်မာ အသံ"))
+        spVoice = spinner(listOf("Nilar · အမျိုးသမီး", "Thiha · အမျိုးသား"))
+        colB.addView(spVoice, lp(MATCH, dp(42), t = 4))
+        c2.addView(colA, lp(0, WRAP, 1f, r = 5))
+        c2.addView(colB, lp(0, WRAP, 1f, l = 5))
+        body.addView(c2, lp(MATCH, WRAP, t = 8))
+
+        // voice tuning
+        val c3 = card()
+        val rowT = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val sCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        tvSpeed = label("")
+        sbSpeed = SeekBar(this).apply {
+            max = 150
+            progress = 50
+            progressTintList = ColorStateList.valueOf(C_ACCENT)
+            thumbTintList = ColorStateList.valueOf(C_CHAR)
+        }
+        sCol.addView(tvSpeed)
+        sCol.addView(sbSpeed, lp(MATCH, WRAP, t = 2))
+        val pCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        tvPitch = label("")
+        sbPitch = SeekBar(this).apply {
+            max = 100
+            progress = 50
+            progressTintList = ColorStateList.valueOf(C_ACCENT)
+            thumbTintList = ColorStateList.valueOf(C_CHAR)
+        }
+        pCol.addView(tvPitch)
+        pCol.addView(sbPitch, lp(MATCH, WRAP, t = 2))
+        rowT.addView(sCol, lp(0, WRAP, 1f, r = 6))
+        rowT.addView(pCol, lp(0, WRAP, 1f, l = 6))
+        c3.addView(rowT)
+        btnPreview = styledButton("▶  အသံ စမ်းနားထောင်မယ်", false)
+        c3.addView(btnPreview, lp(MATCH, dp(40), t = 8))
+        body.addView(c3, lp(MATCH, WRAP, t = 8))
+
+        // video
+        val c4 = card().apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        btnVideo = styledButton("🎬  Video ရွေးမယ်", false)
+        c4.addView(btnVideo, lp(WRAP, dp(42)))
+        tvVideo = TextView(this).apply {
+            text = "Video မရွေးရသေးပါ"
+            textSize = 13f
+            setTextColor(C_TEXT2)
+            setSingleLine()
+            ellipsize = TextUtils.TruncateAt.MIDDLE
+        }
+        c4.addView(tvVideo, lp(0, WRAP, 1f, l = 10))
+        body.addView(c4, lp(MATCH, WRAP, t = 8))
+
+        // generate
+        val rowG = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        btnGenerate = styledButton("▶  Recap ဖန်တီးမယ်", true).apply {
+            textSize = 16f
+            isEnabled = false
+        }
+        rowG.addView(btnGenerate, lp(0, dp(52), 1f))
+        btnOpen = styledButton("ဖွင့်မယ်", false).apply { visibility = View.GONE }
+        rowG.addView(btnOpen, lp(WRAP, dp(52), l = 8))
+        body.addView(rowG, lp(MATCH, WRAP, t = 12))
+
+        progress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+            max = 100
+            progressTintList = ColorStateList.valueOf(C_ACCENT)
+            progressBackgroundTintList = ColorStateList.valueOf(Color.parseColor("#C9CBD3"))
+            visibility = View.INVISIBLE
+        }
+        body.addView(progress, lp(MATCH, dp(6), t = 10))
+
+        tvStatus = TextView(this).apply {
+            textSize = 12f
+            setTextColor(C_TEXT)
+            maxLines = 3
+            ellipsize = TextUtils.TruncateAt.END
+            minLines = 1
+        }
+        body.addView(tvStatus, lp(MATCH, WRAP, t = 4))
+
+        // script box
+        val c5 = card()
+        val rowS = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        rowS.addView(label("မြန်မာ SCRIPT"), lp(0, WRAP, 1f))
+        val btnCopy = TextView(this).apply {
+            text = "Copy"
+            textSize = 12f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(C_ACCENT)
+            setPadding(dp(10), dp(2), dp(4), dp(2))
+        }
+        rowS.addView(btnCopy, lp(WRAP, WRAP))
+        c5.addView(rowS)
+        val scroll = ScrollView(this).apply {
+            isFillViewport = false
+            background = rounded(C_INPUT, dp(10), dp(1), C_STROKE)
+            setPadding(dp(10), dp(8), dp(10), dp(8))
+        }
+        tvScript = TextView(this).apply {
+            hint = "Script ထွက်လာရင် ဒီမှာ ပေါ်ပါမယ်"
+            textSize = 13f
+            setTextColor(C_TEXT)
+            setHintTextColor(Color.parseColor("#9A9EAA"))
+            setTextIsSelectable(true)
+        }
+        scroll.addView(tvScript, ViewGroup.LayoutParams(MATCH, WRAP))
+        c5.addView(scroll, lp(MATCH, 0, 1f, t = 6))
+        body.addView(c5, LinearLayout.LayoutParams(MATCH, 0, 1f).apply { topMargin = dp(8) })
+
+        btnCopy.setOnClickListener {
+            val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            cm.setPrimaryClip(ClipData.newPlainText("script", tvScript.text))
+            Toast.makeText(this, "Copy လုပ်ပြီးပါပြီ", Toast.LENGTH_SHORT).show()
+        }
+        return root
+    }
+
+    // ------------------------------------------------------------ lifecycle
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_main)
+        window.statusBarColor = C_CHAR
+        window.navigationBarColor = C_BG2
+        setContentView(buildUi())
 
         etApiKey.setText(prefs.getString("key", ""))
-        etTitle.setText(prefs.getString("title", ""))
-        etMinutes.setText(prefs.getString("minutes", "5"))
-        etTone.setText(prefs.getString("tone", "စိတ်လှုပ်ရှားဖွယ်"))
-        etGeminiModel.setText(prefs.getString("gmodel", "gemini-3-flash-preview"))
-        etEdgeVersion.setText(prefs.getString("edgever", "143.0.3650.75"))
+        spLang.setSelection(prefs.getInt("lang", 0).coerceIn(0, langs.size - 1))
+        spVoice.setSelection(prefs.getInt("voice", 0).coerceIn(0, 1))
+        sbSpeed.progress = prefs.getInt("speed", 50)
+        sbPitch.progress = prefs.getInt("pitch", 50)
+        updateVoiceLabels()
 
-        spVoice.adapter = ArrayAdapter(
-            this, android.R.layout.simple_spinner_dropdown_item,
-            listOf("Nilar (အမျိုးသမီးအသံ)", "Thiha (အမျိုးသားအသံ)")
-        )
-        spVoice.setSelection(prefs.getInt("voice", 0))
+        val l = object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(s: SeekBar?, p: Int, fromUser: Boolean) = updateVoiceLabels()
+            override fun onStartTrackingTouch(s: SeekBar?) {}
+            override fun onStopTrackingTouch(s: SeekBar?) {}
+        }
+        sbSpeed.setOnSeekBarChangeListener(l)
+        sbPitch.setOnSeekBarChangeListener(l)
 
-        spLang.adapter = ArrayAdapter(
-            this, android.R.layout.simple_spinner_dropdown_item,
-            langs.map { it.second } + "ကိုယ်တိုင်ရွေးထားတဲ့ model zip"
-        )
-        spLang.setSelection(prefs.getInt("lang", 0).coerceIn(0, langs.size))
-
-        tvModel.text = if (VoskTranscriber.isModelReady(modelDir)) "Model ရှိပြီးသား ✅" else "Model ကို ပထမဆုံး run တဲ့အခါ အလိုအလျောက် ဒေါင်းပါမယ်"
-
-        btnModel.setOnClickListener { pickModel.launch("*/*") }
         btnVideo.setOnClickListener { pickVideo.launch("video/*") }
         btnGenerate.setOnClickListener { startPipeline() }
+        btnPreview.setOnClickListener { previewVoice() }
+        btnSettings.setOnClickListener { showSettings() }
         btnOpen.setOnClickListener {
             outUri?.let {
                 startActivity(
@@ -118,6 +489,20 @@ class MainActivity : AppCompatActivity() {
         refreshButtons()
     }
 
+    override fun onDestroy() {
+        player?.release()
+        player = null
+        super.onDestroy()
+    }
+
+    private fun rateStr() = String.format(Locale.US, "%+d%%", sbSpeed.progress - 50)
+    private fun pitchStr() = String.format(Locale.US, "%+dHz", sbPitch.progress - 50)
+
+    private fun updateVoiceLabels() {
+        tvSpeed.text = "အမြန်နှုန်း  ${rateStr()}"
+        tvPitch.text = "အသံ Pitch  ${pitchStr()}"
+    }
+
     private fun refreshButtons() {
         btnGenerate.isEnabled = !busy && videoUri != null
     }
@@ -125,39 +510,49 @@ class MainActivity : AppCompatActivity() {
     private fun savePrefs() {
         prefs.edit()
             .putString("key", etApiKey.text.toString().trim())
-            .putString("title", etTitle.text.toString())
-            .putString("minutes", etMinutes.text.toString())
-            .putString("tone", etTone.text.toString())
-            .putString("gmodel", etGeminiModel.text.toString().trim())
-            .putString("edgever", etEdgeVersion.text.toString().trim())
-            .putInt("voice", spVoice.selectedItemPosition)
             .putInt("lang", spLang.selectedItemPosition)
+            .putInt("voice", spVoice.selectedItemPosition)
+            .putInt("speed", sbSpeed.progress)
+            .putInt("pitch", sbPitch.progress)
             .apply()
     }
 
-    private fun installModel(uri: Uri) {
-        tvModel.text = "Model ဖြေနေပါတယ်... (ခဏစောင့်ပါ)"
-        btnModel.isEnabled = false
-        lifecycleScope.launch {
-            try {
-                withContext(Dispatchers.IO) { VoskTranscriber.installModelZip(this@MainActivity, uri, modelDir) }
-                tvModel.text = "Model ထည့်ပြီးပါပြီ ✅"
-                prefs.edit().putString("model_lang", "custom").apply()
-                spLang.setSelection(langs.size)
-            } catch (e: Exception) {
-                tvModel.text = "❌ ${e.message}"
-            } finally {
-                btnModel.isEnabled = true
-                refreshButtons()
-            }
+    private fun showSettings() {
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(8), dp(20), 0)
         }
+        val etG = EditText(this).apply {
+            hint = "Gemini model (ဥပမာ gemini-3-flash-preview)"
+            setText(prefs.getString("gmodel", "gemini-3-flash-preview"))
+            setSingleLine()
+        }
+        val etE = EditText(this).apply {
+            hint = "Edge version (အလိုအလျောက်ဆို အလွတ်ထားပါ)"
+            val saved = prefs.getString("edgever", "").orEmpty()
+            setText(if (saved == "143.0.3650.75") "" else saved)
+            setSingleLine()
+        }
+        box.addView(etG)
+        box.addView(etE)
+        AlertDialog.Builder(this)
+            .setTitle("Advanced")
+            .setView(box)
+            .setPositiveButton("သိမ်းမယ်") { _, _ ->
+                prefs.edit()
+                    .putString("gmodel", etG.text.toString().trim())
+                    .putString("edgever", etE.text.toString().trim())
+                    .apply()
+            }
+            .setNegativeButton("မလုပ်တော့ဘူး", null)
+            .show()
     }
 
     private fun setBusy(b: Boolean) {
         busy = b
-        btnModel.isEnabled = !b
-        btnVideo.isEnabled = !b
-        progress.visibility = if (b) View.VISIBLE else View.GONE
+        listOf<View>(btnVideo, btnPreview, spLang, spVoice, sbSpeed, sbPitch, btnSettings, etApiKey)
+            .forEach { it.isEnabled = !b }
+        progress.visibility = if (b) View.VISIBLE else View.INVISIBLE
         if (b) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         refreshButtons()
@@ -165,8 +560,63 @@ class MainActivity : AppCompatActivity() {
 
     private fun setStatus(s: String) = runOnUiThread { tvStatus.text = s }
     private fun updateProgress(p: Int) = runOnUiThread { progress.progress = p }
-    private fun log(s: String) = runOnUiThread { tvLog.append(s + "\n") }
 
+    private fun fileName(uri: Uri): String = try {
+        contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+            if (c.moveToFirst()) c.getString(0) else null
+        } ?: "video ရွေးပြီးပါပြီ ✅"
+    } catch (e: Exception) {
+        "video ရွေးပြီးပါပြီ ✅"
+    }
+
+    // --------------------------------------------------------- voice preview
+    private fun previewVoice() {
+        savePrefs()
+        val voice = if (spVoice.selectedItemPosition == 0) "my-MM-NilarNeural" else "my-MM-ThihaNeural"
+        val edgeVer = edgeOverride()
+        btnPreview.isEnabled = false
+        setStatus("အသံ စမ်းနေပါတယ်...")
+        lifecycleScope.launch {
+            try {
+                val sample = "မင်္ဂလာပါ၊ ဒါက ဒီအက်စ် ရီကက်ပ် တူးလ်ရဲ့ မြန်မာအသံ စမ်းသပ်မှု ဖြစ်ပါတယ်။"
+                val bytes = try {
+                    EdgeTts.synthesize(sample, voice, rateStr(), pitchStr(), edgeVer)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    setStatus("⚠️ Edge မရလို့ Google အသံနဲ့ စမ်းပါတယ် (အမြန်နှုန်း/pitch မပါ)")
+                    GoogleTts.synthesize(sample)
+                }
+                val f = File(cacheDir, "preview.mp3")
+                f.writeBytes(bytes)
+                player?.release()
+                player = MediaPlayer().apply {
+                    setDataSource(f.absolutePath)
+                    setOnCompletionListener {
+                        it.release()
+                        player = null
+                        tvStatus.text = ""
+                    }
+                    prepare()
+                    start()
+                }
+                setStatus("▶ ဖွင့်နေပါတယ်...")
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                setStatus("❌ ${e.message}")
+            } finally {
+                if (!busy) btnPreview.isEnabled = true
+            }
+        }
+    }
+
+    private fun edgeOverride(): String {
+        val v = prefs.getString("edgever", "").orEmpty()
+        return if (v == "143.0.3650.75") "" else v
+    }
+
+    // ------------------------------------------------------------- pipeline
     private fun startPipeline() {
         val key = etApiKey.text.toString().trim()
         if (key.isEmpty()) {
@@ -175,7 +625,7 @@ class MainActivity : AppCompatActivity() {
         }
         val uri = videoUri ?: return
         savePrefs()
-        tvLog.text = ""
+        tvScript.text = ""
         btnOpen.visibility = View.GONE
         setBusy(true)
         lifecycleScope.launch {
@@ -184,103 +634,15 @@ class MainActivity : AppCompatActivity() {
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {
-                setStatus("❌ Error")
-                log("❌ ${e.javaClass.simpleName}: ${e.message}")
+                setStatus("❌ ${e.javaClass.simpleName}: ${e.message}")
             } finally {
                 setBusy(false)
             }
         }
     }
 
-    private suspend fun runPipeline(key: String, uri: Uri) {
-        val minutes = etMinutes.text.toString().toIntOrNull()?.coerceIn(1, 30) ?: 5
-        val title = etTitle.text.toString().trim().ifEmpty { "(မသိ)" }
-        val tone = etTone.text.toString().trim().ifEmpty { "စိတ်လှုပ်ရှားဖွယ်" }
-        val voice = if (spVoice.selectedItemPosition == 0) "my-MM-NilarNeural" else "my-MM-ThihaNeural"
-        val edgeVer = etEdgeVersion.text.toString().trim().ifEmpty { "143.0.3650.75" }
-        val gModel = etGeminiModel.text.toString().trim()
-
-        // 0) Model မရှိသေးရင် ဒေါင်း
-        ensureModel()
-
-        // 1) Audio ထုတ်
-        setStatus("၁/၅ အသံထုတ်နေပါတယ်...")
-        updateProgress(0)
-        val wav = File(cacheDir, "audio_16k.wav")
-        withContext(Dispatchers.IO) {
-            AudioExtractor.extractToWav(this@MainActivity, uri, wav) { updateProgress(it) }
-        }
-
-        // 2) Vosk
-        setStatus("၂/၅ စာသားပြောင်းနေပါတယ် (မိနစ်များစွာ ကြာနိုင်)...")
-        updateProgress(0)
-        val transcript = withContext(Dispatchers.Default) {
-            VoskTranscriber.transcribe(modelDir, wav) { updateProgress(it) }
-        }
-        wav.delete()
-        if (transcript.isBlank()) error("စကားပြောစာသား မရပါ။ Model ဘာသာစကား ကိုက်မကိုက် စစ်ပါ")
-        File(filesDir, "transcript.txt").writeText(transcript)
-        log("✅ စာသား ${transcript.lines().size} လိုင်း ရပြီ")
-
-        // 3) Gemini
-        setStatus("၃/၅ Gemini က မြန်မာ script ရေးနေပါတယ်...")
-        updateProgress(0)
-        val clipped = if (transcript.length > 300_000) transcript.take(300_000) else transcript
-        val prompt = buildPrompt(title, tone, minutes, clipped)
-        val segs = GeminiClient.writeScript(key, gModel, prompt) { log(it) }
-        val scriptText = segs.joinToString("\n\n") { it.text }
-        File(filesDir, "script.txt").writeText(scriptText)
-        log("✅ Script ${segs.size} ပိုင်း ရပြီ\n\n$scriptText\n")
-
-        // 4) Edge TTS
-        val narrationBytes = ByteArrayOutputStream()
-        val durations = ArrayList<Long>()
-        for ((i, s) in segs.withIndex()) {
-            setStatus("၄/၅ မြန်မာအသံထုတ်နေပါတယ် ${i + 1}/${segs.size}")
-            updateProgress((i * 100) / segs.size)
-            val segBytes = ByteArrayOutputStream()
-            for (chunk in chunkText(s.text)) {
-                segBytes.write(EdgeTts.synthesize(chunk, voice, edgeVer))
-                delay(200)
-            }
-            val bytes = segBytes.toByteArray()
-            val tmp = File(cacheDir, "seg.mp3")
-            tmp.writeBytes(bytes)
-            durations += (mp3DurationMs(tmp) ?: (bytes.size * 1000L / 6000)).coerceAtLeast(1000L)
-            narrationBytes.write(bytes)
-        }
-        val narration = File(cacheDir, "narration.mp3")
-        narration.writeBytes(narrationBytes.toByteArray())
-        log("✅ Narration ${durations.sum() / 1000} စက္ကန့် ရပြီ")
-
-        // 5) ပေါင်း
-        setStatus("၅/၅ ဗီဒီယိုနဲ့ ပေါင်းနေပါတယ် (မိနစ်အနည်းငယ် ကြာနိုင်)...")
-        updateProgress(0)
-        val movieMs = videoDurationMs(uri)
-        val clips = segs.mapIndexed { i, s ->
-            val dur = durations[i]
-            var start = if (s.start >= 0) (s.start * 1000).toLong() else movieMs * i / segs.size
-            if (movieMs > 0 && start + dur > movieMs) start = (movieMs - dur).coerceAtLeast(0)
-            VideoMerger.Clip(start, start + dur)
-        }
-        val out = File(cacheDir, "recap_out.mp4")
-        out.delete()
-        VideoMerger.merge(this, uri, narration, clips, out)
-
-        val where = withContext(Dispatchers.IO) { saveToMovies(out) }
-        updateProgress(100)
-        setStatus("✅ ပြီးပါပြီ")
-        log("📁 သိမ်းထားတဲ့နေရာ: $where")
-        if (outUri != null) btnOpen.visibility = View.VISIBLE
-    }
-
     private suspend fun ensureModel() {
-        val idx = spLang.selectedItemPosition
-        if (idx >= langs.size) {
-            if (!VoskTranscriber.isModelReady(modelDir)) error("Model zip မရွေးရသေးပါ")
-            return
-        }
-        val (code, _, name) = langs[idx]
+        val (code, _, name) = langs[spLang.selectedItemPosition.coerceIn(0, langs.size - 1)]
         if (VoskTranscriber.isModelReady(modelDir) && prefs.getString("model_lang", "") == code) return
 
         setStatus("Model ဒေါင်းနေပါတယ် (တစ်ကြိမ်ပဲ၊ ~၄၀MB)...")
@@ -296,30 +658,118 @@ class MainActivity : AppCompatActivity() {
         }
         zip.delete()
         prefs.edit().putString("model_lang", code).apply()
-        runOnUiThread { tvModel.text = "Model ရပြီ ✅ (${langs[idx].second})" }
-        log("✅ Model ဒေါင်းပြီးပါပြီ")
     }
 
-    private fun buildPrompt(title: String, tone: String, minutes: Int, transcript: String): String = """
-You are a professional Burmese movie-recap narrator.
-Movie title: $title
+    private suspend fun runPipeline(key: String, uri: Uri) {
+        val voice = if (spVoice.selectedItemPosition == 0) "my-MM-NilarNeural" else "my-MM-ThihaNeural"
+        val rate = rateStr()
+        val pitch = pitchStr()
+        val edgeVer = edgeOverride()
+        val gModel = prefs.getString("gmodel", "gemini-3-flash-preview").orEmpty()
 
-Below is the dialogue transcript of the movie with timestamps in seconds, formatted as [start-end] text.
+        val movieMs = videoDurationMs(uri)
+        val minutes = if (movieMs > 0) (movieMs / 60000.0).roundToInt().coerceIn(1, 20) else 5
+
+        ensureModel()
+
+        // 1) Audio
+        setStatus("၁/၅ အသံထုတ်နေပါတယ်...")
+        updateProgress(0)
+        val wav = File(cacheDir, "audio_16k.wav")
+        withContext(Dispatchers.IO) {
+            AudioExtractor.extractToWav(this@MainActivity, uri, wav) { updateProgress(it) }
+        }
+
+        // 2) Vosk
+        setStatus("၂/၅ စကားပြောကို စာသားပြောင်းနေပါတယ်...")
+        updateProgress(0)
+        val transcript = withContext(Dispatchers.Default) {
+            VoskTranscriber.transcribe(modelDir, wav) { updateProgress(it) }
+        }
+        wav.delete()
+        if (transcript.isBlank()) error("စကားပြောစာသား မရပါ။ ဘာသာစကား ကိုက်မကိုက် စစ်ပါ")
+        File(filesDir, "transcript.txt").writeText(transcript)
+
+        // 3) Gemini
+        setStatus("၃/၅ Gemini က မြန်မာ script ရေးနေပါတယ်...")
+        updateProgress(0)
+        val clipped = if (transcript.length > 300_000) transcript.take(300_000) else transcript
+        val segs = GeminiClient.writeScript(key, gModel, buildPrompt(minutes, clipped)) { setStatus(it) }
+        val scriptText = segs.joinToString("\n\n") { it.text }
+        File(filesDir, "script.txt").writeText(scriptText)
+        runOnUiThread { tvScript.text = scriptText }
+
+        // 4) TTS
+        var useEdge = true
+        setStatus("၄/၅ မြန်မာအသံ ပြင်ဆင်နေပါတယ်...")
+        try {
+            EdgeTts.synthesize("မင်္ဂလာပါ", voice, rate, pitch, edgeVer)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            useEdge = false
+            setStatus("⚠️ Edge TTS မရလို့ Google အသံနဲ့ ဆက်လုပ်ပါမယ်")
+            delay(1500)
+        }
+
+        val narrationBytes = ByteArrayOutputStream()
+        val durations = ArrayList<Long>()
+        for ((i, s) in segs.withIndex()) {
+            setStatus("၄/၅ မြန်မာအသံထုတ်နေပါတယ် ${i + 1}/${segs.size}" + if (useEdge) "" else " (Google)")
+            updateProgress((i * 100) / segs.size)
+            val segBytes = ByteArrayOutputStream()
+            for (chunk in chunkText(s.text, if (useEdge) 500 else 180)) {
+                val b = if (useEdge) EdgeTts.synthesize(chunk, voice, rate, pitch, edgeVer)
+                else GoogleTts.synthesize(chunk)
+                segBytes.write(b)
+                delay(150)
+            }
+            val bytes = segBytes.toByteArray()
+            val ms = if (useEdge) bytes.size / 6L // 48kbps CBR = 6000 bytes/sec
+            else {
+                val tmp = File(cacheDir, "seg.mp3")
+                tmp.writeBytes(bytes)
+                mp3DurationMs(tmp) ?: (bytes.size / 4L)
+            }
+            durations += ms.coerceAtLeast(1000L)
+            narrationBytes.write(bytes)
+        }
+        val narration = File(cacheDir, "narration.mp3")
+        narration.writeBytes(narrationBytes.toByteArray())
+
+        // 5) Merge
+        setStatus("၅/၅ ဗီဒီယိုနဲ့ ပေါင်းနေပါတယ် (မိနစ်အနည်းငယ် ကြာနိုင်)...")
+        updateProgress(0)
+        val clips = planClips(segs, durations, movieMs)
+        val out = File(cacheDir, "recap_out.mp4")
+        out.delete()
+        VideoMerger.merge(this, uri, narration, clips, out)
+
+        val where = withContext(Dispatchers.IO) { saveToMovies(out) }
+        updateProgress(100)
+        setStatus("✅ ပြီးပါပြီ — $where")
+        if (outUri != null) runOnUiThread { btnOpen.visibility = View.VISIBLE }
+    }
+
+    private fun buildPrompt(minutes: Int, transcript: String): String = """
+You are a professional Burmese movie-recap narrator.
+
+Below is the dialogue transcript of a movie/video with timestamps in seconds, formatted as [start-end] text.
 The dialogue may be in English or another language and may contain speech-recognition errors. Infer the story from context.
 
-Task: Write a recap narration of the whole movie in natural spoken Burmese (မြန်မာဘာသာ), in the style of popular movie-recap YouTube channels. Tone: $tone.
+Task: Write a recap narration of the whole video in natural spoken Burmese (မြန်မာဘာသာ), in the style of popular movie-recap YouTube channels. Tone: exciting and engaging.
 Rules:
-- Total length: about $minutes minutes when read aloud (about ${minutes * 600} Burmese characters).
-- Split the narration into 12 to 40 consecutive segments in story order.
-- For each segment, give the start and end time in seconds of the part of the movie where those events happen, using the transcript timestamps.
+- Total length: about $minutes minutes when read aloud (about ${minutes * 550} Burmese characters).
+- Split the narration into ${(minutes * 2).coerceIn(8, 40)} consecutive segments in story order.
+- For each segment, give the start and end time in seconds (decimals allowed) of the part of the video where those exact events happen, using the transcript timestamps. Ranges must be accurate and must not overlap.
 - Plain spoken Burmese only. No bullet points, no markdown, no emojis, no English except character names.
-Output ONLY a JSON array like: [{"text":"...","start":123,"end":170}]
+Output ONLY a JSON array like: [{"text":"...","start":123.4,"end":170.0}]
 
 Transcript:
 $transcript
 """.trimIndent()
 
-    private fun chunkText(text: String, max: Int = 500): List<String> {
+    private fun chunkText(text: String, max: Int): List<String> {
         val parts = text.split(Regex("(?<=[။.!?])")).map { it.trim() }.filter { it.isNotEmpty() }
         val out = ArrayList<String>()
         var cur = StringBuilder()
@@ -337,6 +787,46 @@ $transcript
         }
         if (cur.isNotEmpty()) out.add(cur.toString())
         return out
+    }
+
+    /** Script တစ်ပိုင်းစီအတွက် ဇာတ်ကားထဲက သက်ဆိုင်ရာ scene ကို အသံကြာချိန်နဲ့ အတိအကျ ကိုက်အောင် ဖြတ်တယ် */
+    private fun planClips(
+        segs: List<GeminiClient.Seg>,
+        durs: List<Long>,
+        movieMs: Long
+    ): List<VideoMerger.Clip> {
+        val out = ArrayList<VideoMerger.Clip>()
+        for ((i, s) in segs.withIndex()) {
+            val d = durs[i]
+            var sMs = (s.start * 1000).toLong()
+            var eMs = (s.end * 1000).toLong()
+            val valid = s.start >= 0 && s.end > s.start && (movieMs <= 0 || sMs < movieMs)
+            if (!valid) {
+                sMs = if (movieMs > 0) movieMs * i / segs.size else 0L
+                eMs = sMs + d
+            }
+            if (movieMs > 0) eMs = eMs.coerceAtMost(movieMs)
+            val range = eMs - sMs
+            if (range >= d * 3 / 2 && d >= 9000) {
+                // ဒီအပိုင်းရဲ့ scene အကွာအဝေးတစ်ခုလုံးကို လွှမ်းအောင် clip အတိုလေးတွေ ပြန့်ယူ
+                val n = (d / 6000).toInt().coerceIn(2, 4)
+                val base = d / n
+                for (j in 0 until n) {
+                    val len = if (j == n - 1) d - base * (n - 1) else base
+                    val st = sMs + (range - len) * j / (n - 1)
+                    out.add(clampClip(st, len, movieMs))
+                }
+            } else {
+                out.add(clampClip(sMs, d, movieMs))
+            }
+        }
+        return out
+    }
+
+    private fun clampClip(start: Long, len: Long, movieMs: Long): VideoMerger.Clip {
+        var st = start.coerceAtLeast(0L)
+        if (movieMs > 0 && st + len > movieMs) st = (movieMs - len).coerceAtLeast(0L)
+        return VideoMerger.Clip(st, st + len)
     }
 
     private fun mp3DurationMs(f: File): Long? = try {
@@ -360,18 +850,18 @@ $transcript
     }
 
     private fun saveToMovies(src: File): String {
-        val name = "recap_${System.currentTimeMillis()}.mp4"
+        val name = "DS_recap_${System.currentTimeMillis()}.mp4"
         return if (Build.VERSION.SDK_INT >= 29) {
             val v = ContentValues().apply {
                 put(MediaStore.Video.Media.DISPLAY_NAME, name)
                 put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
-                put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + "/MovieRecap")
+                put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + "/DS Recap")
             }
             val u = contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, v)
                 ?: error("ဖိုင်သိမ်းလို့မရပါ")
             contentResolver.openOutputStream(u)!!.use { o -> src.inputStream().use { it.copyTo(o) } }
             outUri = u
-            "Movies/MovieRecap/$name (Gallery ထဲမှာ ကြည့်ပါ)"
+            "Gallery › Movies/DS Recap"
         } else {
             val dir = getExternalFilesDir(Environment.DIRECTORY_MOVIES)!!
             val dest = File(dir, name)
