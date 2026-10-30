@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- background plate -->
+    <path android:pathData="M24,0 H84 A24,24 0 0 1 108,24 V84 A24,24 0 0 1 84,108 H24 A24,24 0 0 1 0,84 V24 A24,24 0 0 1 24,0 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="0" android:startY="0"
+                android:endX="108" android:endY="108"
+                android:type="linear">
+                <item android:offset="0" android:color="#FF3A3D47" />
+                <item android:offset="1" android:color="#FF14151A" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- inner hexagon plate -->
+    <path
+        android:fillColor="#33FFFFFF"
+        android:pathData="M54,25 L79,39.5 L79,68.5 L54,83 L29,68.5 L29,39.5 Z" />
+
+    <!-- platinum hexagon ring -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FFD3D6DE"
+        android:strokeWidth="3"
+        android:strokeLineJoin="round"
+        android:pathData="M54,22 L81.7,38 L81.7,70 L54,86 L26.3,70 L26.3,38 Z" />
+
+    <!-- D with play-triangle counter -->
+    <path
+        android:fillType="evenOdd"
+        android:pathData="M33,40 H40 A10,14 0 0 1 40,68 H33 Z M38,46 L38,62 L46,54 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="0" android:startY="40"
+                android:endX="0" android:endY="68"
+                android:type="linear">
+                <item android:offset="0" android:color="#FFFFFFFF" />
+                <item android:offset="1" android:color="#FFC4C8D2" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- S block letter -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FFEDEFF3"
+        android:strokeWidth="4.5"
+        android:strokeLineCap="square"
+        android:strokeLineJoin="miter"
+        android:pathData="M73,42.5 H58.5 V52 H71 V65.5 H56" />
+</vector>
