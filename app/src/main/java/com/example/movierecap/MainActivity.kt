@@ -143,7 +143,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setStatus(s: String) = runOnUiThread { tvStatus.text = s }
-    private fun setProgress(p: Int) = runOnUiThread { progress.progress = p }
+    private fun updateProgress(p: Int) = runOnUiThread { progress.progress = p }
     private fun log(s: String) = runOnUiThread { tvLog.append(s + "\n") }
 
     private fun startPipeline() {
@@ -181,17 +181,17 @@ class MainActivity : AppCompatActivity() {
 
         // 1) Audio ထုတ်
         setStatus("၁/၅ အသံထုတ်နေပါတယ်...")
-        setProgress(0)
+        updateProgress(0)
         val wav = File(cacheDir, "audio_16k.wav")
         withContext(Dispatchers.IO) {
-            AudioExtractor.extractToWav(this@MainActivity, uri, wav) { setProgress(it) }
+            AudioExtractor.extractToWav(this@MainActivity, uri, wav) { updateProgress(it) }
         }
 
         // 2) Vosk
         setStatus("၂/၅ စာသားပြောင်းနေပါတယ် (မိနစ်များစွာ ကြာနိုင်)...")
-        setProgress(0)
+        updateProgress(0)
         val transcript = withContext(Dispatchers.Default) {
-            VoskTranscriber.transcribe(modelDir, wav) { setProgress(it) }
+            VoskTranscriber.transcribe(modelDir, wav) { updateProgress(it) }
         }
         wav.delete()
         if (transcript.isBlank()) error("စကားပြောစာသား မရပါ။ Model ဘာသာစကား ကိုက်မကိုက် စစ်ပါ")
@@ -200,7 +200,7 @@ class MainActivity : AppCompatActivity() {
 
         // 3) Gemini
         setStatus("၃/၅ Gemini က မြန်မာ script ရေးနေပါတယ်...")
-        setProgress(0)
+        updateProgress(0)
         val clipped = if (transcript.length > 300_000) transcript.take(300_000) else transcript
         val prompt = buildPrompt(title, tone, minutes, clipped)
         val segs = GeminiClient.writeScript(key, gModel, prompt) { log(it) }
@@ -213,7 +213,7 @@ class MainActivity : AppCompatActivity() {
         val durations = ArrayList<Long>()
         for ((i, s) in segs.withIndex()) {
             setStatus("၄/၅ မြန်မာအသံထုတ်နေပါတယ် ${i + 1}/${segs.size}")
-            setProgress((i * 100) / segs.size)
+            updateProgress((i * 100) / segs.size)
             val segBytes = ByteArrayOutputStream()
             for (chunk in chunkText(s.text)) {
                 segBytes.write(EdgeTts.synthesize(chunk, voice, edgeVer))
@@ -231,7 +231,7 @@ class MainActivity : AppCompatActivity() {
 
         // 5) ပေါင်း
         setStatus("၅/၅ ဗီဒီယိုနဲ့ ပေါင်းနေပါတယ် (မိနစ်အနည်းငယ် ကြာနိုင်)...")
-        setProgress(0)
+        updateProgress(0)
         val movieMs = videoDurationMs(uri)
         val clips = segs.mapIndexed { i, s ->
             val dur = durations[i]
@@ -244,7 +244,7 @@ class MainActivity : AppCompatActivity() {
         VideoMerger.merge(this, uri, narration, clips, out)
 
         val where = withContext(Dispatchers.IO) { saveToMovies(out) }
-        setProgress(100)
+        updateProgress(100)
         setStatus("✅ ပြီးပါပြီ")
         log("📁 သိမ်းထားတဲ့နေရာ: $where")
         if (outUri != null) btnOpen.visibility = View.VISIBLE
