@@ -1,14 +1,17 @@
 package com.example.movierecap
 
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import okio.ByteString
+import org.json.JSONArray
 import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.security.MessageDigest
@@ -17,7 +20,6 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
-import java.util.UUID
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.resume
@@ -25,49 +27,120 @@ import kotlin.coroutines.resumeWithException
 
 /**
  * Microsoft Edge "Read Aloud" TTS (တရားဝင် API မဟုတ်ပါ)
- * 403 error ဖြစ်ရင် app ထဲက "Edge version" ကို Edge ရဲ့ version အသစ်နဲ့ ပြောင်းပါ။
+ * Edge version ကို Microsoft ဆီကနေ အလိုအလျောက် ယူပြီး 403 ဖြစ်ရင် version တွေကို တစ်ခုချင်းစမ်းတယ်။
  */
 object EdgeTts {
     private const val TOKEN = "6A5AA1D4EAFF4E9FB37E23D68491D6F4"
     private const val WIN_EPOCH = 11_644_473_600L
     private const val BASE =
         "wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1"
+    private const val FALLBACK_1 = "154.0.4258.62"
+    private const val FALLBACK_2 = "143.0.3650.75"
 
-    @Volatile
-    private var skewSec = 0L
+    @Volatile private var skewSec = 0L
+    @Volatile private var workingVersion: String? = null
+    @Volatile private var latestVersion: String? = null
+    @Volatile private var fetched = false
 
-    private class Forbidden(val serverMs: Long?) : IOException("HTTP 403 (version/token ဟောင်းနေနိုင်)")
+    private class Forbidden(val serverMs: Long?) : IOException("HTTP 403")
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(20, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)
         .build()
 
+    // ---------- version discovery ----------
+    private fun cmp(a: String, b: String): Int {
+        val x = a.split('.').map { it.toIntOrNull() ?: 0 }
+        val y = b.split('.').map { it.toIntOrNull() ?: 0 }
+        for (i in 0 until maxOf(x.size, y.size)) {
+            val p = x.getOrElse(i) { 0 }
+            val q = y.getOrElse(i) { 0 }
+            if (p != q) return p.compareTo(q)
+        }
+        return 0
+    }
+
+    private fun fetchLatest(): String? = try {
+        val req = Request.Builder()
+            .url("https://edgeupdates.microsoft.com/api/products")
+            .header("User-Agent", "Mozilla/5.0")
+            .build()
+        client.newCall(req).execute().use { r ->
+            if (!r.isSuccessful) {
+                null
+            } else {
+                val arr = JSONArray(r.body?.string().orEmpty())
+                var best: String? = null
+                val re = Regex("""\d+\.\d+\.\d+\.\d+""")
+                for (i in 0 until arr.length()) {
+                    val p = arr.getJSONObject(i)
+                    if (p.optString("Product") != "Stable") continue
+                    val rel = p.optJSONArray("Releases") ?: continue
+                    for (j in 0 until rel.length()) {
+                        val v = rel.getJSONObject(j).optString("ProductVersion")
+                        if (re.matches(v) && (best == null || cmp(v, best) > 0)) best = v
+                    }
+                }
+                best
+            }
+        }
+    } catch (e: Exception) {
+        null
+    }
+
+    private suspend fun candidates(override: String): List<String> {
+        if (!fetched) {
+            latestVersion = withContext(Dispatchers.IO) { fetchLatest() }
+            fetched = true
+        }
+        return listOfNotNull(
+            override.trim().ifEmpty { null },
+            workingVersion,
+            latestVersion,
+            FALLBACK_1,
+            FALLBACK_2
+        ).distinct()
+    }
+
+    // ---------- public API ----------
     suspend fun synthesize(
         text: String,
         voice: String,
-        edgeVersion: String,
-        rate: String = "+0%"
+        rate: String = "+0%",
+        pitch: String = "+0Hz",
+        versionOverride: String = ""
     ): ByteArray {
         var last: Exception? = null
-        for (attempt in 1..4) {
-            try {
-                return once(text, voice, edgeVersion, rate)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Forbidden) {
-                last = e
-                val s = e.serverMs
-                if (s != null) skewSec = s / 1000 - System.currentTimeMillis() / 1000
-                delay(500)
-            } catch (e: Exception) {
-                last = e
-                delay(1500L * attempt)
+        for (v in candidates(versionOverride)) {
+            var forbidden = 0
+            var attempt = 0
+            while (attempt < 3) {
+                attempt++
+                try {
+                    val bytes = once(text, voice, v, rate, pitch)
+                    workingVersion = v
+                    return bytes
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Forbidden) {
+                    last = e
+                    val s = e.serverMs
+                    if (s != null) skewSec = s / 1000 - System.currentTimeMillis() / 1000
+                    forbidden++
+                    if (forbidden >= 2) break
+                    delay(300)
+                } catch (e: Exception) {
+                    last = e
+                    if (attempt >= 2) throw IOException("Edge TTS မအောင်မြင်ပါ: ${e.message}")
+                    delay(1000L * attempt)
+                }
             }
         }
-        throw IOException("Edge TTS မအောင်မြင်ပါ: ${last?.message}")
+        throw IOException("Edge TTS မအောင်မြင်ပါ: ${last?.message} (version အားလုံး စမ်းပြီး)")
     }
 
+    // ---------- internals ----------
     private fun gec(): String {
         var ticks = System.currentTimeMillis() / 1000 + skewSec + WIN_EPOCH
         ticks -= ticks % 300
@@ -106,11 +179,12 @@ object EdgeTts {
         text: String,
         voice: String,
         edgeVersion: String,
-        rate: String
+        rate: String,
+        pitch: String
     ): ByteArray = suspendCancellableCoroutine { cont ->
         val major = edgeVersion.substringBefore('.')
         val url = "$BASE?TrustedClientToken=$TOKEN" +
-                "&ConnectionId=${UUID.randomUUID().toString().replace("-", "")}" +
+                "&ConnectionId=${hex(16)}" +
                 "&Sec-MS-GEC=${gec()}" +
                 "&Sec-MS-GEC-Version=1-$edgeVersion"
 
@@ -139,7 +213,7 @@ object EdgeTts {
 
         val ssml = "<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='en-US'>" +
                 "<voice name='${longVoice(voice)}'>" +
-                "<prosody pitch='+0Hz' rate='$rate' volume='+0%'>${esc(text)}</prosody>" +
+                "<prosody pitch='$pitch' rate='$rate' volume='+0%'>${esc(text)}</prosody>" +
                 "</voice></speak>"
 
         val ssmlMsg = "X-RequestId:${hex(16)}\r\n" +
