@@ -45,6 +45,18 @@ class MainActivity : AppCompatActivity() {
     private val etGeminiModel by lazy { findViewById<EditText>(R.id.etGeminiModel) }
     private val etEdgeVersion by lazy { findViewById<EditText>(R.id.etEdgeVersion) }
     private val spVoice by lazy { findViewById<Spinner>(R.id.spVoice) }
+    private val spLang by lazy { findViewById<Spinner>(R.id.spLang) }
+
+    // (code, ပြမယ့်နာမည်, vosk model နာမည်)
+    private val langs = listOf(
+        Triple("en", "English (အင်္ဂလိပ်)", "vosk-model-small-en-us-0.15"),
+        Triple("cn", "Chinese (တရုတ်)", "vosk-model-small-cn-0.22"),
+        Triple("fr", "French (ပြင်သစ်)", "vosk-model-small-fr-0.22"),
+        Triple("de", "German (ဂျာမန်)", "vosk-model-small-de-0.15"),
+        Triple("es", "Spanish (စပိန်)", "vosk-model-small-es-0.42"),
+        Triple("ru", "Russian (ရုရှား)", "vosk-model-small-ru-0.22"),
+        Triple("pt", "Portuguese (ပေါ်တူဂီ)", "vosk-model-small-pt-0.3")
+    )
     private val btnModel by lazy { findViewById<Button>(R.id.btnModel) }
     private val btnVideo by lazy { findViewById<Button>(R.id.btnVideo) }
     private val btnGenerate by lazy { findViewById<Button>(R.id.btnGenerate) }
@@ -84,7 +96,13 @@ class MainActivity : AppCompatActivity() {
         )
         spVoice.setSelection(prefs.getInt("voice", 0))
 
-        tvModel.text = if (VoskTranscriber.isModelReady(modelDir)) "Model ထည့်ပြီးသား ✅" else "Model မထည့်ရသေးပါ"
+        spLang.adapter = ArrayAdapter(
+            this, android.R.layout.simple_spinner_dropdown_item,
+            langs.map { it.second } + "ကိုယ်တိုင်ရွေးထားတဲ့ model zip"
+        )
+        spLang.setSelection(prefs.getInt("lang", 0).coerceIn(0, langs.size))
+
+        tvModel.text = if (VoskTranscriber.isModelReady(modelDir)) "Model ရှိပြီးသား ✅" else "Model ကို ပထမဆုံး run တဲ့အခါ အလိုအလျောက် ဒေါင်းပါမယ်"
 
         btnModel.setOnClickListener { pickModel.launch("*/*") }
         btnVideo.setOnClickListener { pickVideo.launch("video/*") }
@@ -101,7 +119,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun refreshButtons() {
-        btnGenerate.isEnabled = !busy && videoUri != null && VoskTranscriber.isModelReady(modelDir)
+        btnGenerate.isEnabled = !busy && videoUri != null
     }
 
     private fun savePrefs() {
@@ -113,6 +131,7 @@ class MainActivity : AppCompatActivity() {
             .putString("gmodel", etGeminiModel.text.toString().trim())
             .putString("edgever", etEdgeVersion.text.toString().trim())
             .putInt("voice", spVoice.selectedItemPosition)
+            .putInt("lang", spLang.selectedItemPosition)
             .apply()
     }
 
@@ -123,6 +142,8 @@ class MainActivity : AppCompatActivity() {
             try {
                 withContext(Dispatchers.IO) { VoskTranscriber.installModelZip(this@MainActivity, uri, modelDir) }
                 tvModel.text = "Model ထည့်ပြီးပါပြီ ✅"
+                prefs.edit().putString("model_lang", "custom").apply()
+                spLang.setSelection(langs.size)
             } catch (e: Exception) {
                 tvModel.text = "❌ ${e.message}"
             } finally {
@@ -178,6 +199,9 @@ class MainActivity : AppCompatActivity() {
         val voice = if (spVoice.selectedItemPosition == 0) "my-MM-NilarNeural" else "my-MM-ThihaNeural"
         val edgeVer = etEdgeVersion.text.toString().trim().ifEmpty { "143.0.3650.75" }
         val gModel = etGeminiModel.text.toString().trim()
+
+        // 0) Model မရှိသေးရင် ဒေါင်း
+        ensureModel()
 
         // 1) Audio ထုတ်
         setStatus("၁/၅ အသံထုတ်နေပါတယ်...")
@@ -248,6 +272,32 @@ class MainActivity : AppCompatActivity() {
         setStatus("✅ ပြီးပါပြီ")
         log("📁 သိမ်းထားတဲ့နေရာ: $where")
         if (outUri != null) btnOpen.visibility = View.VISIBLE
+    }
+
+    private suspend fun ensureModel() {
+        val idx = spLang.selectedItemPosition
+        if (idx >= langs.size) {
+            if (!VoskTranscriber.isModelReady(modelDir)) error("Model zip မရွေးရသေးပါ")
+            return
+        }
+        val (code, _, name) = langs[idx]
+        if (VoskTranscriber.isModelReady(modelDir) && prefs.getString("model_lang", "") == code) return
+
+        setStatus("Model ဒေါင်းနေပါတယ် (တစ်ကြိမ်ပဲ၊ ~၄၀MB)...")
+        updateProgress(0)
+        val zip = withContext(Dispatchers.IO) {
+            VoskTranscriber.download(this@MainActivity, "https://alphacephei.com/vosk/models/$name.zip") {
+                updateProgress(it)
+            }
+        }
+        setStatus("Model ဖြေနေပါတယ်...")
+        withContext(Dispatchers.IO) {
+            VoskTranscriber.installModelZip(this@MainActivity, Uri.fromFile(zip), modelDir)
+        }
+        zip.delete()
+        prefs.edit().putString("model_lang", code).apply()
+        runOnUiThread { tvModel.text = "Model ရပြီ ✅ (${langs[idx].second})" }
+        log("✅ Model ဒေါင်းပြီးပါပြီ")
     }
 
     private fun buildPrompt(title: String, tone: String, minutes: Int, transcript: String): String = """
