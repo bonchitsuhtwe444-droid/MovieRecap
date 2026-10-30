@@ -1,19 +1,23 @@
 package com.example.movierecap
 
+import android.util.Base64
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import okhttp3.Response
-import okhttp3.WebSocket
-import okhttp3.WebSocketListener
-import okio.ByteString
 import org.json.JSONArray
+import java.io.BufferedInputStream
+import java.io.BufferedOutputStream
 import java.io.ByteArrayOutputStream
+import java.io.DataInputStream
+import java.io.EOFException
 import java.io.IOException
+import java.io.InputStream
+import java.io.OutputStream
+import java.net.InetSocketAddress
+import java.net.Socket
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.text.SimpleDateFormat
@@ -21,41 +25,45 @@ import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicBoolean
-import kotlin.coroutines.resume
-import kotlin.coroutines.resumeWithException
+import javax.net.ssl.HttpsURLConnection
+import javax.net.ssl.SSLSocket
+import javax.net.ssl.SSLSocketFactory
 
 /**
  * Microsoft Edge "Read Aloud" TTS (တရားဝင် API မဟုတ်ပါ)
- * မအောင်မြင်ရင် lastReport ထဲမှာ အကြောင်းရင်းအသေးစိတ် ထည့်ပေးတယ်။
+ *
+ * WebSocket ကို OkHttp နဲ့ မဟုတ်ဘဲ ကိုယ်တိုင်ရေးထားတဲ့ socket နဲ့ ချိတ်တယ်။
+ * (OkHttp က permessage-deflate extension ကို အတင်းပို့လို့ 403 ဖြစ်နေနိုင်လို့ ရှောင်ထားတာ။)
+ * မအောင်မြင်ရင် lastReport ထဲမှာ ဆာဗာက ပြန်ပေးတဲ့ header အပြည့်အစုံ ထည့်ပေးတယ်။
  */
 object EdgeTts {
     private const val TOKEN = "6A5AA1D4EAFF4E9FB37E23D68491D6F4"
     private const val WIN_EPOCH = 11_644_473_600L
-    private const val HOST = "speech.platform.bing.com/consumer/speech/synthesize/readaloud"
+    private const val HOST = "speech.platform.bing.com"
+    private const val BASE_PATH = "/consumer/speech/synthesize/readaloud"
     private const val ORIGIN = "chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold"
+    private const val PROVEN_VERSION = "143.0.3650.75"
     private const val FALLBACK_1 = "154.0.4258.62"
-    private const val FALLBACK_2 = "143.0.3650.75"
 
     @Volatile private var skewSec = 0L
     @Volatile private var workingCfg: Cfg? = null
     @Volatile private var latestVersion: String? = null
     @Volatile private var fetched = false
+    private val rnd = SecureRandom()
 
-    /** နောက်ဆုံး မအောင်မြင်မှုရဲ့ အသေးစိတ် (UI မှာ ပြဖို့) */
     @Volatile var lastReport: String = ""
 
-    private class Forbidden(val serverMs: Long?, detail: String) : IOException(detail)
+    private class Forbidden(val serverMs: Long?, val statusLine: String, val head: String) : IOException(statusLine)
     private class NoAudio(detail: String) : IOException(detail)
 
     private data class Cfg(val version: String, val minimal: Boolean, val shortVoice: Boolean)
 
-    private val client = OkHttpClient.Builder()
+    private val http = OkHttpClient.Builder()
         .connectTimeout(20, TimeUnit.SECONDS)
-        .readTimeout(60, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
         .build()
 
-    // ---------- version discovery ----------
+    // ---------------------------------------------------------------- versions
     private fun cmp(a: String, b: String): Int {
         val x = a.split('.').map { it.toIntOrNull() ?: 0 }
         val y = b.split('.').map { it.toIntOrNull() ?: 0 }
@@ -72,7 +80,7 @@ object EdgeTts {
             .url("https://edgeupdates.microsoft.com/api/products")
             .header("User-Agent", "Mozilla/5.0")
             .build()
-        client.newCall(req).execute().use { r ->
+        http.newCall(req).execute().use { r ->
             if (!r.isSuccessful) {
                 null
             } else {
@@ -95,16 +103,16 @@ object EdgeTts {
         null
     }
 
-    private suspend fun configs(override: String): List<Cfg> {
+    private fun configs(override: String): List<Cfg> {
         if (!fetched) {
-            latestVersion = withContext(Dispatchers.IO) { fetchLatest() }
+            latestVersion = fetchLatest()
             fetched = true
         }
         val versions = listOfNotNull(
             override.trim().ifEmpty { null },
+            PROVEN_VERSION,
             latestVersion,
-            FALLBACK_1,
-            FALLBACK_2
+            FALLBACK_1
         ).distinct()
         val list = ArrayList<Cfg>()
         workingCfg?.let { list.add(it) }
@@ -113,22 +121,23 @@ object EdgeTts {
             list.add(Cfg(v, true, false))
         }
         list.add(Cfg(versions.first(), false, true))
-        list.add(Cfg(versions.first(), true, true))
         return list.distinct()
     }
 
-    // ---------- public API ----------
+    // --------------------------------------------------------------- public API
     suspend fun synthesize(
         text: String,
         voice: String,
         rate: String = "+0%",
         pitch: String = "+0Hz",
         versionOverride: String = ""
-    ): ByteArray {
+    ): ByteArray = withContext(Dispatchers.IO) {
         val rep = StringBuilder()
         rep.append("ဖုန်းအချိန် (UTC): ${jsDate()}\n")
-        rep.append("Voice: $voice  rate=$rate  pitch=$pitch\n\n")
+        rep.append("Voice: $voice  rate=$rate  pitch=$pitch\n")
+        rep.append("Transport: raw WebSocket (OkHttp မသုံး)\n\n")
         var lastMsg = ""
+        var headShown = false
         val cfgs = configs(versionOverride)
 
         for (cfg in cfgs) {
@@ -140,14 +149,18 @@ object EdgeTts {
                     val bytes = once(text, voice, cfg, rate, pitch)
                     workingCfg = cfg
                     lastReport = "OK $tag"
-                    return bytes
+                    return@withContext bytes
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Forbidden) {
-                    lastMsg = e.message.orEmpty()
+                    lastMsg = e.statusLine
                     val s = e.serverMs
                     if (s != null) skewSec = s / 1000 - System.currentTimeMillis() / 1000 else skewSec += 60
-                    rep.append("$tag → ${e.message}  (skew=${skewSec}s)\n")
+                    rep.append("$tag → ${e.statusLine} (skew=${skewSec}s)\n")
+                    if (!headShown) {
+                        rep.append("--- ဆာဗာ ပြန်ပေးတဲ့ header ---\n${e.head.take(900)}\n-----------------\n")
+                        headShown = true
+                    }
                     if (tries >= 2) break
                     delay(200)
                 } catch (e: NoAudio) {
@@ -155,7 +168,6 @@ object EdgeTts {
                     rep.append("$tag → ${e.message}\n")
                     break
                 } catch (e: Exception) {
-                    // ကွန်ရက်/TLS/DNS ပြဿနာ — ဆက်စမ်းလို့မရ
                     rep.append("$tag → ${e.javaClass.simpleName}: ${e.message}\n")
                     lastReport = rep.toString()
                     throw IOException("Edge TTS: ${e.javaClass.simpleName}: ${e.message}")
@@ -167,7 +179,7 @@ object EdgeTts {
         throw IOException("Edge TTS မအောင်မြင်ပါ: $lastMsg")
     }
 
-    // ---------- internals ----------
+    // ---------------------------------------------------------------- internals
     private fun gec(): String {
         var ticks = System.currentTimeMillis() / 1000 + skewSec + WIN_EPOCH
         ticks -= ticks % 300
@@ -178,7 +190,7 @@ object EdgeTts {
 
     private fun hex(n: Int): String {
         val b = ByteArray(n)
-        SecureRandom().nextBytes(b)
+        rnd.nextBytes(b)
         return b.joinToString("") { "%02X".format(it) }
     }
 
@@ -208,123 +220,198 @@ object EdgeTts {
         .replace("\"", "&quot;")
         .replace("'", "&apos;")
 
-    private suspend fun probeVoices(version: String): String = withContext(Dispatchers.IO) {
-        try {
-            val url = "https://$HOST/voices/list?trustedclienttoken=$TOKEN" +
-                    "&Sec-MS-GEC=${gec()}&Sec-MS-GEC-Version=1-$version"
-            val req = Request.Builder().url(url)
-                .header("User-Agent", ua(version))
-                .header("Origin", ORIGIN)
-                .header("Accept", "*/*")
-                .build()
-            client.newCall(req).execute().use { r ->
-                val body = r.body?.string().orEmpty()
-                "voices-list: HTTP ${r.code}, serverDate=${r.header("Date")}, " +
-                        "Burmese voice=${body.contains("my-MM")}, bytes=${body.length}"
-            }
+    private fun probeVoices(version: String): String = try {
+        val url = "https://$HOST$BASE_PATH/voices/list?trustedclienttoken=$TOKEN" +
+                "&Sec-MS-GEC=${gec()}&Sec-MS-GEC-Version=1-$version"
+        val req = Request.Builder().url(url)
+            .header("User-Agent", ua(version))
+            .header("Origin", ORIGIN)
+            .header("Accept", "*/*")
+            .build()
+        http.newCall(req).execute().use { r ->
+            val body = r.body?.string().orEmpty()
+            "voices-list: HTTP ${r.code}, Burmese voice=${body.contains("my-MM")}, bytes=${body.length}"
+        }
+    } catch (e: Exception) {
+        "voices-list: ${e.javaClass.simpleName}: ${e.message}"
+    }
+
+    // ------------------------------------------------------ raw WebSocket client
+    private fun readHead(inp: InputStream): String {
+        val bos = ByteArrayOutputStream()
+        var last = 0
+        while (bos.size() < 16_384) {
+            val b = inp.read()
+            if (b < 0) break
+            bos.write(b)
+            last = (last shl 8) or b
+            if (last == 0x0D0A0D0A) break
+        }
+        return bos.toString("ISO-8859-1")
+    }
+
+    private fun serverDateMs(head: String): Long? {
+        val line = head.lineSequence().firstOrNull { it.startsWith("Date:", ignoreCase = true) } ?: return null
+        return try {
+            val f = SimpleDateFormat("EEE, dd MMM yyyy HH:mm:ss zzz", Locale.US)
+            f.parse(line.substringAfter(':').trim())?.time
         } catch (e: Exception) {
-            "voices-list: ${e.javaClass.simpleName}: ${e.message}"
+            null
         }
     }
 
-    private suspend fun once(
-        text: String,
-        voice: String,
-        cfg: Cfg,
-        rate: String,
-        pitch: String
-    ): ByteArray = suspendCancellableCoroutine { cont ->
-        val url = "wss://$HOST/edge/v1?TrustedClientToken=$TOKEN" +
+    private fun sendFrame(out: OutputStream, opcode: Int, payload: ByteArray) {
+        val mask = ByteArray(4)
+        rnd.nextBytes(mask)
+        val bos = ByteArrayOutputStream()
+        bos.write(0x80 or opcode)
+        val n = payload.size
+        when {
+            n < 126 -> bos.write(0x80 or n)
+            n <= 0xFFFF -> {
+                bos.write(0x80 or 126)
+                bos.write(n shr 8)
+                bos.write(n and 0xFF)
+            }
+            else -> {
+                bos.write(0x80 or 127)
+                for (i in 7 downTo 0) bos.write(((n.toLong() shr (8 * i)) and 0xFF).toInt())
+            }
+        }
+        bos.write(mask)
+        val masked = ByteArray(n) { (payload[it].toInt() xor mask[it % 4].toInt()).toByte() }
+        bos.write(masked)
+        out.write(bos.toByteArray())
+        out.flush()
+    }
+
+    private fun once(text: String, voice: String, cfg: Cfg, rate: String, pitch: String): ByteArray {
+        val path = "$BASE_PATH/edge/v1?TrustedClientToken=$TOKEN" +
                 "&ConnectionId=${hex(16)}" +
                 "&Sec-MS-GEC=${gec()}" +
                 "&Sec-MS-GEC-Version=1-${cfg.version}"
 
-        val rb = Request.Builder().url(url)
-            .header("Origin", ORIGIN)
-            .header("User-Agent", ua(cfg.version))
-        if (!cfg.minimal) {
-            rb.header("Pragma", "no-cache")
-                .header("Cache-Control", "no-cache")
-                .header("Accept-Language", "en-US,en;q=0.9")
-                .header("Cookie", "muid=${hex(16)};")
+        val plain = Socket()
+        plain.connect(InetSocketAddress(HOST, 443), 20_000)
+        val ssl = (SSLSocketFactory.getDefault() as SSLSocketFactory)
+            .createSocket(plain, HOST, 443, true) as SSLSocket
+        ssl.soTimeout = 30_000
+        try {
+            ssl.startHandshake()
+            if (!HttpsURLConnection.getDefaultHostnameVerifier().verify(HOST, ssl.session)) {
+                throw IOException("TLS hostname မကိုက်ပါ")
+            }
+            val out = BufferedOutputStream(ssl.outputStream)
+            val inp = DataInputStream(BufferedInputStream(ssl.inputStream))
+
+            val keyBytes = ByteArray(16)
+            rnd.nextBytes(keyBytes)
+            val key = Base64.encodeToString(keyBytes, Base64.NO_WRAP)
+
+            val req = StringBuilder()
+            req.append("GET $path HTTP/1.1\r\n")
+            req.append("Host: $HOST\r\n")
+            req.append("Connection: Upgrade\r\n")
+            req.append("Upgrade: websocket\r\n")
+            req.append("Sec-WebSocket-Version: 13\r\n")
+            req.append("Sec-WebSocket-Key: $key\r\n")
+            req.append("Origin: $ORIGIN\r\n")
+            req.append("User-Agent: ${ua(cfg.version)}\r\n")
+            if (!cfg.minimal) {
+                req.append("Cookie: muid=${hex(16)};\r\n")
+                req.append("Pragma: no-cache\r\n")
+                req.append("Cache-Control: no-cache\r\n")
+                req.append("Accept-Language: en-US,en;q=0.9\r\n")
+                req.append("Accept-Encoding: gzip, deflate, br, zstd\r\n")
+            }
+            req.append("\r\n")
+            out.write(req.toString().toByteArray(Charsets.US_ASCII))
+            out.flush()
+
+            val head = readHead(inp)
+            val statusLine = head.lineSequence().firstOrNull().orEmpty().trim()
+            val code = statusLine.split(" ").getOrNull(1)?.toIntOrNull() ?: -1
+            if (code != 101) {
+                if (code == 403) throw Forbidden(serverDateMs(head), statusLine, head)
+                throw IOException("Handshake မအောင်ပါ: $statusLine")
+            }
+
+            val configMsg = "X-Timestamp:${jsDate()}\r\n" +
+                    "Content-Type:application/json; charset=utf-8\r\n" +
+                    "Path:speech.config\r\n\r\n" +
+                    "{\"context\":{\"synthesis\":{\"audio\":{\"metadataoptions\":" +
+                    "{\"sentenceBoundaryEnabled\":\"false\",\"wordBoundaryEnabled\":\"false\"}," +
+                    "\"outputFormat\":\"audio-24khz-48kbitrate-mono-mp3\"}}}}\r\n"
+
+            val voiceName = if (cfg.shortVoice) voice else longVoice(voice)
+            val ssml = "<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='en-US'>" +
+                    "<voice name='$voiceName'>" +
+                    "<prosody pitch='$pitch' rate='$rate' volume='+0%'>${esc(text)}</prosody>" +
+                    "</voice></speak>"
+            val ssmlMsg = "X-RequestId:${hex(16)}\r\n" +
+                    "Content-Type:application/ssml+xml\r\n" +
+                    "X-Timestamp:${jsDate()}Z\r\n" +
+                    "Path:ssml\r\n\r\n" + ssml
+
+            sendFrame(out, 0x1, configMsg.toByteArray(Charsets.UTF_8))
+            sendFrame(out, 0x1, ssmlMsg.toByteArray(Charsets.UTF_8))
+
+            val audio = ByteArrayOutputStream()
+            val msgBuf = ByteArrayOutputStream()
+            var msgOp = 0
+            try {
+                loop@ while (true) {
+                    val b0 = inp.readUnsignedByte()
+                    val b1 = inp.readUnsignedByte()
+                    val fin = (b0 and 0x80) != 0
+                    val op = b0 and 0x0F
+                    var len = (b1 and 0x7F).toLong()
+                    if (len == 126L) len = inp.readUnsignedShort().toLong()
+                    else if (len == 127L) len = inp.readLong()
+                    if (len < 0 || len > 16_000_000L) throw IOException("WebSocket frame အရွယ်အစား မမှန်ပါ")
+                    val mk = if ((b1 and 0x80) != 0) ByteArray(4).also { inp.readFully(it) } else null
+                    val data = ByteArray(len.toInt())
+                    inp.readFully(data)
+                    if (mk != null) for (i in data.indices) data[i] = (data[i].toInt() xor mk[i % 4].toInt()).toByte()
+
+                    when (op) {
+                        0x8 -> break@loop
+                        0x9 -> sendFrame(out, 0xA, data)
+                        0xA -> {}
+                        else -> {
+                            if (op != 0) {
+                                msgOp = op
+                                msgBuf.reset()
+                            }
+                            msgBuf.write(data)
+                            if (fin) {
+                                val full = msgBuf.toByteArray()
+                                msgBuf.reset()
+                                if (msgOp == 1) {
+                                    if (String(full, Charsets.UTF_8).contains("Path:turn.end")) break@loop
+                                } else if (msgOp == 2 && full.size >= 2) {
+                                    val hl = ((full[0].toInt() and 0xFF) shl 8) or (full[1].toInt() and 0xFF)
+                                    if (2 + hl <= full.size) {
+                                        val header = String(full, 2, hl, Charsets.UTF_8)
+                                        if (header.contains("Path:audio")) {
+                                            audio.write(full, 2 + hl, full.size - 2 - hl)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch (e: EOFException) {
+                // connection ပိတ်သွားပြီ — အသံရပြီးသားဆိုရင် ဆက်သုံး
+            }
+            if (audio.size() == 0) throw NoAudio("turn.end ရောက်ပေမယ့် အသံ မပါပါ (voice နာမည်/SSML မှားနိုင်)")
+            return audio.toByteArray()
+        } finally {
+            try {
+                ssl.close()
+            } catch (e: Exception) {
+            }
         }
-        val req = rb.build()
-
-        val audio = ByteArrayOutputStream()
-        val finished = AtomicBoolean(false)
-
-        val configMsg = "X-Timestamp:${jsDate()}\r\n" +
-                "Content-Type:application/json; charset=utf-8\r\n" +
-                "Path:speech.config\r\n\r\n" +
-                "{\"context\":{\"synthesis\":{\"audio\":{\"metadataoptions\":" +
-                "{\"sentenceBoundaryEnabled\":\"false\",\"wordBoundaryEnabled\":\"false\"}," +
-                "\"outputFormat\":\"audio-24khz-48kbitrate-mono-mp3\"}}}}\r\n"
-
-        val voiceName = if (cfg.shortVoice) voice else longVoice(voice)
-        val ssml = "<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='en-US'>" +
-                "<voice name='$voiceName'>" +
-                "<prosody pitch='$pitch' rate='$rate' volume='+0%'>${esc(text)}</prosody>" +
-                "</voice></speak>"
-
-        val ssmlMsg = "X-RequestId:${hex(16)}\r\n" +
-                "Content-Type:application/ssml+xml\r\n" +
-                "X-Timestamp:${jsDate()}Z\r\n" +
-                "Path:ssml\r\n\r\n" + ssml
-
-        val ws = client.newWebSocket(req, object : WebSocketListener() {
-            override fun onOpen(webSocket: WebSocket, response: Response) {
-                webSocket.send(configMsg)
-                webSocket.send(ssmlMsg)
-            }
-
-            override fun onMessage(webSocket: WebSocket, text: String) {
-                if (text.contains("Path:turn.end")) {
-                    webSocket.close(1000, null)
-                    if (finished.compareAndSet(false, true)) {
-                        if (audio.size() > 0) cont.resume(audio.toByteArray())
-                        else cont.resumeWithException(NoAudio("turn.end ရောက်ပေမယ့် အသံ မပါပါ"))
-                    }
-                }
-            }
-
-            override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
-                val b = bytes.toByteArray()
-                if (b.size < 2) return
-                val hl = ((b[0].toInt() and 0xFF) shl 8) or (b[1].toInt() and 0xFF)
-                if (2 + hl > b.size) return
-                val header = String(b, 2, hl, Charsets.UTF_8)
-                if (header.contains("Path:audio")) {
-                    audio.write(b, 2 + hl, b.size - 2 - hl)
-                }
-            }
-
-            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                if (!finished.compareAndSet(false, true)) return
-                if (response != null) {
-                    val body = try {
-                        response.body?.string()?.take(160).orEmpty()
-                    } catch (e: Exception) {
-                        ""
-                    }
-                    val date = response.header("Date")
-                    val detail = "HTTP ${response.code} (serverDate=$date) $body".trim()
-                    if (response.code == 403) {
-                        cont.resumeWithException(Forbidden(response.headers.getDate("Date")?.time, detail))
-                    } else {
-                        cont.resumeWithException(IOException(detail))
-                    }
-                } else {
-                    cont.resumeWithException(t)
-                }
-            }
-
-            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                if (finished.compareAndSet(false, true)) {
-                    if (audio.size() > 0) cont.resume(audio.toByteArray())
-                    else cont.resumeWithException(NoAudio("connection ပိတ်သွားတယ် (code $code $reason)"))
-                }
-            }
-        })
-        cont.invokeOnCancellation { ws.cancel() }
     }
 }
