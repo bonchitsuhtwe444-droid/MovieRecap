@@ -27,22 +27,28 @@ import kotlin.coroutines.resumeWithException
 
 /**
  * Microsoft Edge "Read Aloud" TTS (တရားဝင် API မဟုတ်ပါ)
- * Edge version ကို Microsoft ဆီကနေ အလိုအလျောက် ယူပြီး 403 ဖြစ်ရင် version တွေကို တစ်ခုချင်းစမ်းတယ်။
+ * မအောင်မြင်ရင် lastReport ထဲမှာ အကြောင်းရင်းအသေးစိတ် ထည့်ပေးတယ်။
  */
 object EdgeTts {
     private const val TOKEN = "6A5AA1D4EAFF4E9FB37E23D68491D6F4"
     private const val WIN_EPOCH = 11_644_473_600L
-    private const val BASE =
-        "wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1"
+    private const val HOST = "speech.platform.bing.com/consumer/speech/synthesize/readaloud"
+    private const val ORIGIN = "chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold"
     private const val FALLBACK_1 = "154.0.4258.62"
     private const val FALLBACK_2 = "143.0.3650.75"
 
     @Volatile private var skewSec = 0L
-    @Volatile private var workingVersion: String? = null
+    @Volatile private var workingCfg: Cfg? = null
     @Volatile private var latestVersion: String? = null
     @Volatile private var fetched = false
 
-    private class Forbidden(val serverMs: Long?) : IOException("HTTP 403")
+    /** နောက်ဆုံး မအောင်မြင်မှုရဲ့ အသေးစိတ် (UI မှာ ပြဖို့) */
+    @Volatile var lastReport: String = ""
+
+    private class Forbidden(val serverMs: Long?, detail: String) : IOException(detail)
+    private class NoAudio(detail: String) : IOException(detail)
+
+    private data class Cfg(val version: String, val minimal: Boolean, val shortVoice: Boolean)
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(20, TimeUnit.SECONDS)
@@ -89,18 +95,26 @@ object EdgeTts {
         null
     }
 
-    private suspend fun candidates(override: String): List<String> {
+    private suspend fun configs(override: String): List<Cfg> {
         if (!fetched) {
             latestVersion = withContext(Dispatchers.IO) { fetchLatest() }
             fetched = true
         }
-        return listOfNotNull(
+        val versions = listOfNotNull(
             override.trim().ifEmpty { null },
-            workingVersion,
             latestVersion,
             FALLBACK_1,
             FALLBACK_2
         ).distinct()
+        val list = ArrayList<Cfg>()
+        workingCfg?.let { list.add(it) }
+        for (v in versions) {
+            list.add(Cfg(v, false, false))
+            list.add(Cfg(v, true, false))
+        }
+        list.add(Cfg(versions.first(), false, true))
+        list.add(Cfg(versions.first(), true, true))
+        return list.distinct()
     }
 
     // ---------- public API ----------
@@ -111,33 +125,46 @@ object EdgeTts {
         pitch: String = "+0Hz",
         versionOverride: String = ""
     ): ByteArray {
-        var last: Exception? = null
-        for (v in candidates(versionOverride)) {
-            var forbidden = 0
-            var attempt = 0
-            while (attempt < 3) {
-                attempt++
+        val rep = StringBuilder()
+        rep.append("ဖုန်းအချိန် (UTC): ${jsDate()}\n")
+        rep.append("Voice: $voice  rate=$rate  pitch=$pitch\n\n")
+        var lastMsg = ""
+        val cfgs = configs(versionOverride)
+
+        for (cfg in cfgs) {
+            var tries = 0
+            while (tries < 2) {
+                tries++
+                val tag = "v${cfg.version}${if (cfg.minimal) " min" else ""}${if (cfg.shortVoice) " shortVoice" else ""}"
                 try {
-                    val bytes = once(text, voice, v, rate, pitch)
-                    workingVersion = v
+                    val bytes = once(text, voice, cfg, rate, pitch)
+                    workingCfg = cfg
+                    lastReport = "OK $tag"
                     return bytes
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Forbidden) {
-                    last = e
+                    lastMsg = e.message.orEmpty()
                     val s = e.serverMs
-                    if (s != null) skewSec = s / 1000 - System.currentTimeMillis() / 1000
-                    forbidden++
-                    if (forbidden >= 2) break
-                    delay(300)
+                    if (s != null) skewSec = s / 1000 - System.currentTimeMillis() / 1000 else skewSec += 60
+                    rep.append("$tag → ${e.message}  (skew=${skewSec}s)\n")
+                    if (tries >= 2) break
+                    delay(200)
+                } catch (e: NoAudio) {
+                    lastMsg = e.message.orEmpty()
+                    rep.append("$tag → ${e.message}\n")
+                    break
                 } catch (e: Exception) {
-                    last = e
-                    if (attempt >= 2) throw IOException("Edge TTS မအောင်မြင်ပါ: ${e.message}")
-                    delay(1000L * attempt)
+                    // ကွန်ရက်/TLS/DNS ပြဿနာ — ဆက်စမ်းလို့မရ
+                    rep.append("$tag → ${e.javaClass.simpleName}: ${e.message}\n")
+                    lastReport = rep.toString()
+                    throw IOException("Edge TTS: ${e.javaClass.simpleName}: ${e.message}")
                 }
             }
         }
-        throw IOException("Edge TTS မအောင်မြင်ပါ: ${last?.message} (version အားလုံး စမ်းပြီး)")
+        rep.append("\n").append(probeVoices(cfgs.first().version))
+        lastReport = rep.toString()
+        throw IOException("Edge TTS မအောင်မြင်ပါ: $lastMsg")
     }
 
     // ---------- internals ----------
@@ -161,6 +188,12 @@ object EdgeTts {
         return f.format(Date()) + " GMT+0000 (Coordinated Universal Time)"
     }
 
+    private fun ua(version: String): String {
+        val major = version.substringBefore('.')
+        return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) " +
+                "Chrome/$major.0.0.0 Safari/537.36 Edg/$major.0.0.0"
+    }
+
     private fun longVoice(short: String): String {
         val p = short.split("-")
         if (p.size < 3) return short
@@ -175,31 +208,47 @@ object EdgeTts {
         .replace("\"", "&quot;")
         .replace("'", "&apos;")
 
+    private suspend fun probeVoices(version: String): String = withContext(Dispatchers.IO) {
+        try {
+            val url = "https://$HOST/voices/list?trustedclienttoken=$TOKEN" +
+                    "&Sec-MS-GEC=${gec()}&Sec-MS-GEC-Version=1-$version"
+            val req = Request.Builder().url(url)
+                .header("User-Agent", ua(version))
+                .header("Origin", ORIGIN)
+                .header("Accept", "*/*")
+                .build()
+            client.newCall(req).execute().use { r ->
+                val body = r.body?.string().orEmpty()
+                "voices-list: HTTP ${r.code}, serverDate=${r.header("Date")}, " +
+                        "Burmese voice=${body.contains("my-MM")}, bytes=${body.length}"
+            }
+        } catch (e: Exception) {
+            "voices-list: ${e.javaClass.simpleName}: ${e.message}"
+        }
+    }
+
     private suspend fun once(
         text: String,
         voice: String,
-        edgeVersion: String,
+        cfg: Cfg,
         rate: String,
         pitch: String
     ): ByteArray = suspendCancellableCoroutine { cont ->
-        val major = edgeVersion.substringBefore('.')
-        val url = "$BASE?TrustedClientToken=$TOKEN" +
+        val url = "wss://$HOST/edge/v1?TrustedClientToken=$TOKEN" +
                 "&ConnectionId=${hex(16)}" +
                 "&Sec-MS-GEC=${gec()}" +
-                "&Sec-MS-GEC-Version=1-$edgeVersion"
+                "&Sec-MS-GEC-Version=1-${cfg.version}"
 
-        val req = Request.Builder().url(url)
-            .header("Pragma", "no-cache")
-            .header("Cache-Control", "no-cache")
-            .header("Origin", "chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold")
-            .header(
-                "User-Agent",
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) " +
-                        "Chrome/$major.0.0.0 Safari/537.36 Edg/$major.0.0.0"
-            )
-            .header("Accept-Language", "en-US,en;q=0.9")
-            .header("Cookie", "muid=${hex(16)};")
-            .build()
+        val rb = Request.Builder().url(url)
+            .header("Origin", ORIGIN)
+            .header("User-Agent", ua(cfg.version))
+        if (!cfg.minimal) {
+            rb.header("Pragma", "no-cache")
+                .header("Cache-Control", "no-cache")
+                .header("Accept-Language", "en-US,en;q=0.9")
+                .header("Cookie", "muid=${hex(16)};")
+        }
+        val req = rb.build()
 
         val audio = ByteArrayOutputStream()
         val finished = AtomicBoolean(false)
@@ -211,8 +260,9 @@ object EdgeTts {
                 "{\"sentenceBoundaryEnabled\":\"false\",\"wordBoundaryEnabled\":\"false\"}," +
                 "\"outputFormat\":\"audio-24khz-48kbitrate-mono-mp3\"}}}}\r\n"
 
+        val voiceName = if (cfg.shortVoice) voice else longVoice(voice)
         val ssml = "<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='en-US'>" +
-                "<voice name='${longVoice(voice)}'>" +
+                "<voice name='$voiceName'>" +
                 "<prosody pitch='$pitch' rate='$rate' volume='+0%'>${esc(text)}</prosody>" +
                 "</voice></speak>"
 
@@ -232,7 +282,7 @@ object EdgeTts {
                     webSocket.close(1000, null)
                     if (finished.compareAndSet(false, true)) {
                         if (audio.size() > 0) cont.resume(audio.toByteArray())
-                        else cont.resumeWithException(IOException("အသံ မရပါ"))
+                        else cont.resumeWithException(NoAudio("turn.end ရောက်ပေမယ့် အသံ မပါပါ"))
                     }
                 }
             }
@@ -249,19 +299,29 @@ object EdgeTts {
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                if (finished.compareAndSet(false, true)) {
-                    if (response?.code == 403) {
-                        cont.resumeWithException(Forbidden(response.headers.getDate("Date")?.time))
-                    } else {
-                        cont.resumeWithException(t)
+                if (!finished.compareAndSet(false, true)) return
+                if (response != null) {
+                    val body = try {
+                        response.body?.string()?.take(160).orEmpty()
+                    } catch (e: Exception) {
+                        ""
                     }
+                    val date = response.header("Date")
+                    val detail = "HTTP ${response.code} (serverDate=$date) $body".trim()
+                    if (response.code == 403) {
+                        cont.resumeWithException(Forbidden(response.headers.getDate("Date")?.time, detail))
+                    } else {
+                        cont.resumeWithException(IOException(detail))
+                    }
+                } else {
+                    cont.resumeWithException(t)
                 }
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                 if (finished.compareAndSet(false, true)) {
                     if (audio.size() > 0) cont.resume(audio.toByteArray())
-                    else cont.resumeWithException(IOException("connection ပိတ်သွားတယ်"))
+                    else cont.resumeWithException(NoAudio("connection ပိတ်သွားတယ် (code $code $reason)"))
                 }
             }
         })
