@@ -2,9 +2,11 @@ package com.example.movierecap
 
 import android.content.Context
 import android.net.Uri
+import androidx.media3.common.Effect
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.effect.Presentation
+import androidx.media3.effect.SpeedChangeEffect
 import androidx.media3.transformer.Composition
 import androidx.media3.transformer.EditedMediaItem
 import androidx.media3.transformer.EditedMediaItemSequence
@@ -21,7 +23,7 @@ import kotlin.coroutines.resumeWithException
 
 object VideoMerger {
 
-    data class Clip(val startMs: Long, val endMs: Long)
+    data class Clip(val startMs: Long, val endMs: Long, val speed: Float = 1f)
 
     /** ဇာတ်ကားကနေ clip တွေဖြတ်ပြီး (မူရင်းအသံဖယ်) မြန်မာ narration နဲ့ ပေါင်းတယ် */
     suspend fun merge(
@@ -33,8 +35,6 @@ object VideoMerger {
     ) {
         withContext(Dispatchers.Main) {
             suspendCancellableCoroutine<Unit> { cont ->
-                val effects = Effects(emptyList(), listOf(Presentation.createForHeight(720)))
-
                 val videoItems = clips.map { c ->
                     val mi = MediaItem.Builder()
                         .setUri(videoUri)
@@ -45,9 +45,14 @@ object VideoMerger {
                                 .build()
                         )
                         .build()
+                    val videoEffects = if (kotlin.math.abs(c.speed - 1f) < 0.04f) {
+                        listOf<Effect>(Presentation.createForHeight(720))
+                    } else {
+                        listOf<Effect>(SpeedChangeEffect(c.speed), Presentation.createForHeight(720))
+                    }
                     EditedMediaItem.Builder(mi)
                         .setRemoveAudio(true)
-                        .setEffects(effects)
+                        .setEffects(Effects(emptyList(), videoEffects))
                         .build()
                 }
 
