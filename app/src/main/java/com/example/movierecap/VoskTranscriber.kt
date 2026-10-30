@@ -2,6 +2,8 @@ package com.example.movierecap
 
 import android.content.Context
 import android.net.Uri
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import org.json.JSONObject
 import org.vosk.LibVosk
 import org.vosk.LogLevel
@@ -11,9 +13,47 @@ import java.io.BufferedInputStream
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.io.IOException
+import java.util.concurrent.TimeUnit
 import java.util.zip.ZipInputStream
 
 object VoskTranscriber {
+
+
+    /** Model zip ကို အင်တာနက်ကနေ ဒေါင်းတယ် */
+    fun download(context: Context, url: String, onProgress: (Int) -> Unit): File {
+        val client = OkHttpClient.Builder()
+            .connectTimeout(30, TimeUnit.SECONDS)
+            .readTimeout(60, TimeUnit.SECONDS)
+            .build()
+        val out = File(context.cacheDir, "vosk_model.zip")
+        client.newCall(Request.Builder().url(url).build()).execute().use { r ->
+            if (!r.isSuccessful) throw IOException("Model ဒေါင်းလို့မရပါ (HTTP ${r.code})")
+            val body = r.body ?: throw IOException("Model ဖိုင် အလွတ်ဖြစ်နေတယ်")
+            val total = body.contentLength()
+            body.byteStream().use { ins ->
+                FileOutputStream(out).use { o ->
+                    val buf = ByteArray(65536)
+                    var done = 0L
+                    var last = -1
+                    while (true) {
+                        val n = ins.read(buf)
+                        if (n <= 0) break
+                        o.write(buf, 0, n)
+                        done += n
+                        if (total > 0) {
+                            val p = (done * 100 / total).toInt()
+                            if (p != last) {
+                                last = p
+                                onProgress(p)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return out
+    }
 
     /** Model zip ကို ဖြေပြီး destDir ထဲ ထည့်ပေးတယ် */
     fun installModelZip(context: Context, zipUri: Uri, destDir: File) {
