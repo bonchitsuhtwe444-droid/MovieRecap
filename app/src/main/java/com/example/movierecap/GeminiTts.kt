@@ -60,6 +60,9 @@ object GeminiTts {
                             delay(20_000)
                         }
                     }
+                    code == 400 && body.contains("location is not supported") -> throw IOException(
+                        "Gemini က ဒီ ကွန်ရက်/VPN ရဲ့ နိုင်ငံကို ထောက်ပံ့မထားပါ။ VPN ကို US / Singapore / Japan လို ထောက်ပံ့တဲ့ နိုင်ငံကို ပြောင်းပြီး ပြန်စမ်းပါ။"
+                    )
                     else -> throw IOException("Gemini TTS HTTP $code: ${body.take(200)}")
                 }
             }
