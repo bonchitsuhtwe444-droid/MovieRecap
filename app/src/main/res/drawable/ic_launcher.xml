@@ -13,8 +13,8 @@
                 android:startX="0" android:startY="0"
                 android:endX="108" android:endY="108"
                 android:type="linear">
-                <item android:offset="0" android:color="#FF3A3D47" />
-                <item android:offset="1" android:color="#FF14151A" />
+                <item android:offset="0" android:color="#FF8B5CF6" />
+                <item android:offset="1" android:color="#FF312E81" />
             </gradient>
         </aapt:attr>
     </path>
@@ -27,7 +27,7 @@
     <!-- platinum hexagon ring -->
     <path
         android:fillColor="#00000000"
-        android:strokeColor="#FFD3D6DE"
+        android:strokeColor="#FFFFB3D9"
         android:strokeWidth="3"
         android:strokeLineJoin="round"
         android:pathData="M54,22 L81.7,38 L81.7,70 L54,86 L26.3,70 L26.3,38 Z" />
@@ -42,7 +42,7 @@
                 android:endX="0" android:endY="68"
                 android:type="linear">
                 <item android:offset="0" android:color="#FFFFFFFF" />
-                <item android:offset="1" android:color="#FFC4C8D2" />
+                <item android:offset="1" android:color="#FFFFD6EC" />
             </gradient>
         </aapt:attr>
     </path>
@@ -50,7 +50,7 @@
     <!-- S block letter -->
     <path
         android:fillColor="#00000000"
-        android:strokeColor="#FFEDEFF3"
+        android:strokeColor="#FFFFFFFF"
         android:strokeWidth="4.5"
         android:strokeLineCap="square"
         android:strokeLineJoin="miter"
