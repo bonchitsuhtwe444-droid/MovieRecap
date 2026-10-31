@@ -10,6 +10,9 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.IOException
 import java.util.Locale
+import kotlin.math.abs
+import kotlin.math.pow
+import kotlin.math.roundToInt
 
 /**
  * FFmpeg နဲ့ scene တစ်ခုချင်းကို ဖြတ်၊ speed ချိန်ညှိ၊ ၃၀fps အသေပြောင်းပြီး
@@ -58,6 +61,74 @@ object VideoMerger {
         args += enc.args
         args += outFile.absolutePath
         return run(args)
+    }
+
+    // ---------------------------------------------------------------- audio tools
+    private fun audioFilter(speed: Double, semitones: Double): String {
+        val needPitch = abs(semitones) > 0.05
+        val needSpeed = abs(speed - 1.0) > 0.02
+        if (!needPitch && !needSpeed) return ""
+        val r = 2.0.pow(semitones / 12.0)
+        val parts = ArrayList<String>()
+        parts.add("aresample=24000")
+        if (needPitch) {
+            parts.add("asetrate=${(24000 * r).roundToInt()}")
+            parts.add("aresample=24000")
+        }
+        var tempo = speed / (if (needPitch) r else 1.0)
+        while (tempo > 2.0) {
+            parts.add("atempo=2.0")
+            tempo /= 2.0
+        }
+        while (tempo < 0.5) {
+            parts.add("atempo=0.5")
+            tempo /= 0.5
+        }
+        if (abs(tempo - 1.0) > 0.001) parts.add("atempo=${f(tempo, 4)}")
+        return parts.joinToString(",")
+    }
+
+    /** mp3 / pcm(24kHz mono s16le) ကို အမြန်နှုန်း/pitch ချိန်ညှိပြီး PCM 24kHz mono s16le အဖြစ် ပြန်ပေးတယ် */
+    suspend fun toPcm(context: Context, data: ByteArray, ext: String, speed: Double, semitones: Double): ByteArray =
+        withContext(Dispatchers.IO) {
+            val inF = File(context.cacheDir, "tts_in.$ext")
+            val outF = File(context.cacheDir, "tts_out.pcm")
+            inF.writeBytes(data)
+            outF.delete()
+            val args = ArrayList<String>()
+            args += listOf("-y", "-hide_banner")
+            if (ext == "pcm") args += listOf("-f", "s16le", "-ar", "24000", "-ac", "1")
+            args += listOf("-i", inF.absolutePath)
+            val af = audioFilter(speed, semitones)
+            if (af.isNotEmpty()) args += listOf("-af", af)
+            args += listOf("-f", "s16le", "-ar", "24000", "-ac", "1", outF.absolutePath)
+            val (ok, log) = run(args)
+            if (!ok || outF.length() == 0L) throw IOException("အသံ ပြောင်းလို့မရပါ:\n$log")
+            val bytes = outF.readBytes()
+            inF.delete()
+            outF.delete()
+            bytes
+        }
+
+    fun writeWav24k(out: File, pcm: ByteArray) {
+        val h = java.nio.ByteBuffer.allocate(44).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        h.put("RIFF".toByteArray())
+        h.putInt(36 + pcm.size)
+        h.put("WAVE".toByteArray())
+        h.put("fmt ".toByteArray())
+        h.putInt(16)
+        h.putShort(1)
+        h.putShort(1)
+        h.putInt(24000)
+        h.putInt(48000)
+        h.putShort(2)
+        h.putShort(16)
+        h.put("data".toByteArray())
+        h.putInt(pcm.size)
+        out.outputStream().use {
+            it.write(h.array())
+            it.write(pcm)
+        }
     }
 
     suspend fun merge(
