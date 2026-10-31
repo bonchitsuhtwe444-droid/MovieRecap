@@ -1,5 +1,6 @@
 package com.example.movierecap
 
+import android.os.Build
 import android.util.Base64
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -51,6 +52,7 @@ object EdgeTts {
     @Volatile private var fetched = false
     private val rnd = SecureRandom()
 
+    @Volatile private var failedAt = 0L
     @Volatile var lastReport: String = ""
 
     private class Forbidden(val serverMs: Long?, val statusLine: String, val head: String) : IOException(statusLine)
@@ -130,8 +132,12 @@ object EdgeTts {
         voice: String,
         rate: String = "+0%",
         pitch: String = "+0Hz",
-        versionOverride: String = ""
+        versionOverride: String = "",
+        force: Boolean = false
     ): ByteArray = withContext(Dispatchers.IO) {
+        if (!force && failedAt != 0L && System.currentTimeMillis() - failedAt < 300_000L) {
+            throw IOException("Edge TTS: ခဏအရင်က မအောင်မြင်ခဲ့လို့ ကျော်လိုက်တယ် (အသံစမ်းခလုတ်နဲ့ ပြန်စစ်လို့ရ)")
+        }
         val rep = StringBuilder()
         rep.append("ဖုန်းအချိန် (UTC): ${jsDate()}\n")
         rep.append("Voice: $voice  rate=$rate  pitch=$pitch\n")
@@ -148,6 +154,7 @@ object EdgeTts {
                 try {
                     val bytes = once(text, voice, cfg, rate, pitch)
                     workingCfg = cfg
+                    failedAt = 0L
                     lastReport = "OK $tag"
                     return@withContext bytes
                 } catch (e: CancellationException) {
@@ -176,6 +183,7 @@ object EdgeTts {
         }
         rep.append("\n").append(probeVoices(cfgs.first().version))
         lastReport = rep.toString()
+        failedAt = System.currentTimeMillis()
         throw IOException("Edge TTS မအောင်မြင်ပါ: $lastMsg")
     }
 
@@ -297,6 +305,11 @@ object EdgeTts {
             .createSocket(plain, HOST, 443, true) as SSLSocket
         ssl.soTimeout = 30_000
         try {
+            if (Build.VERSION.SDK_INT >= 29) {
+                val sp = ssl.sslParameters
+                sp.applicationProtocols = arrayOf("http/1.1")
+                ssl.sslParameters = sp
+            }
             ssl.startHandshake()
             if (!HttpsURLConnection.getDefaultHostnameVerifier().verify(HOST, ssl.session)) {
                 throw IOException("TLS hostname မကိုက်ပါ")
@@ -333,6 +346,7 @@ object EdgeTts {
             val code = statusLine.split(" ").getOrNull(1)?.toIntOrNull() ?: -1
             if (code != 101) {
                 if (code == 403) throw Forbidden(serverDateMs(head), statusLine, head)
+                if (statusLine.isEmpty()) throw NoAudio("ဆာဗာက handshake အဖြေ မပေးဘဲ connection ပိတ်လိုက်တယ်")
                 throw IOException("Handshake မအောင်ပါ: $statusLine")
             }
 
