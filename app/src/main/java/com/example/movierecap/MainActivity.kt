@@ -331,7 +331,7 @@ class MainActivity : AppCompatActivity() {
         colA.addView(spLang, lp(MATCH, dp(42), t = 4))
         val colB = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         colB.addView(label("မြန်မာ အသံ"))
-        spVoice = spinner(listOf("Nilar · မ", "Thiha · ကျား"))
+        spVoice = spinner(listOf("Nilar · Edge (မ)", "Thiha · Edge (ကျား)", "Gemini AI အသံ", "Google အသံ"))
         colB.addView(spVoice, lp(MATCH, dp(42), t = 4))
         c2.addView(colA, lp(0, WRAP, 1f, r = 5))
         c2.addView(colB, lp(0, WRAP, 1f, l = 5))
@@ -461,7 +461,7 @@ class MainActivity : AppCompatActivity() {
 
         etApiKey.setText(prefs.getString("key", ""))
         spLang.setSelection(prefs.getInt("lang", 0).coerceIn(0, langs.size - 1))
-        spVoice.setSelection(prefs.getInt("voice", 0).coerceIn(0, 1))
+        spVoice.setSelection(prefs.getInt("voice", 0).coerceIn(0, 3))
         sbSpeed.progress = prefs.getInt("speed", 50)
         sbPitch.progress = prefs.getInt("pitch", 50)
         updateVoiceLabels()
@@ -533,8 +533,20 @@ class MainActivity : AppCompatActivity() {
             setText(if (saved == "143.0.3650.75") "" else saved)
             setSingleLine()
         }
+        val etTm = EditText(this).apply {
+            hint = "Gemini TTS model (အလွတ်ထားရင် auto)"
+            setText(prefs.getString("ttsmodel", ""))
+            setSingleLine()
+        }
+        val etTv = EditText(this).apply {
+            hint = "Gemini TTS voice (ဥပမာ Kore, Puck, Charon)"
+            setText(prefs.getString("ttsvoice", "Kore"))
+            setSingleLine()
+        }
         box.addView(etG)
         box.addView(etE)
+        box.addView(etTm)
+        box.addView(etTv)
         AlertDialog.Builder(this)
             .setTitle("Advanced")
             .setView(box)
@@ -542,6 +554,8 @@ class MainActivity : AppCompatActivity() {
                 prefs.edit()
                     .putString("gmodel", etG.text.toString().trim())
                     .putString("edgever", etE.text.toString().trim())
+                    .putString("ttsmodel", etTm.text.toString().trim())
+                    .putString("ttsvoice", etTv.text.toString().trim())
                     .apply()
             }
             .setNegativeButton("မလုပ်တော့ဘူး", null)
@@ -570,42 +584,124 @@ class MainActivity : AppCompatActivity() {
     }
 
     // --------------------------------------------------------- voice preview
+    // ------------------------------------------------------------ TTS engines
+    private enum class Engine { EDGE, GEMINI, GOOGLE }
+
+    private var engine = Engine.EDGE
+    private var edgeVoice = "my-MM-NilarNeural"
+    private var ttsRate = "+0%"
+    private var ttsPitch = "+0Hz"
+    private var ttsSpeed = 1.0
+    private var ttsSemis = 0.0
+    private var edgeVerOverride = ""
+    private var geminiKey = ""
+    private var geminiTtsModel = ""
+    private var geminiTtsVoice = "Kore"
+    private var engineNote = ""
+    private var lastFallbackReport = ""
+
+    private fun engineLabel() = when (engine) {
+        Engine.EDGE -> "Edge"
+        Engine.GEMINI -> "Gemini"
+        Engine.GOOGLE -> "Google"
+    }
+
+    private fun initEngine() {
+        val idx = spVoice.selectedItemPosition
+        engine = when (idx) {
+            0, 1 -> Engine.EDGE
+            2 -> Engine.GEMINI
+            else -> Engine.GOOGLE
+        }
+        edgeVoice = if (idx == 1) "my-MM-ThihaNeural" else "my-MM-NilarNeural"
+        ttsRate = rateStr()
+        ttsPitch = pitchStr()
+        ttsSpeed = 1.0 + (sbSpeed.progress - 50) / 100.0
+        ttsSemis = (sbPitch.progress - 50) / 8.0
+        edgeVerOverride = edgeOverride()
+        geminiKey = etApiKey.text.toString().trim()
+        geminiTtsModel = prefs.getString("ttsmodel", "").orEmpty()
+        geminiTtsVoice = prefs.getString("ttsvoice", "Kore").orEmpty().ifEmpty { "Kore" }
+        engineNote = ""
+        lastFallbackReport = ""
+    }
+
+    /** စာတိုတစ်ခု → PCM (24kHz mono s16le)။ engine မရရင် Google ကို အလိုအလျောက် ပြောင်းတယ်။ */
+    private suspend fun synthChunkPcm(text: String, forceEdge: Boolean = false): ByteArray {
+        while (true) {
+            if (engine == Engine.GOOGLE && text.length > 180) {
+                val bos = ByteArrayOutputStream()
+                for (c in chunkText(text, 180)) bos.write(synthChunkPcm(c))
+                return bos.toByteArray()
+            }
+            try {
+                return when (engine) {
+                    Engine.EDGE -> VideoMerger.toPcm(
+                        this,
+                        EdgeTts.synthesize(text, edgeVoice, ttsRate, ttsPitch, edgeVerOverride, forceEdge),
+                        "mp3", 1.0, 0.0
+                    )
+                    Engine.GEMINI -> VideoMerger.toPcm(
+                        this,
+                        GeminiTts.synthesize(geminiKey, geminiTtsModel, geminiTtsVoice, text) { setStatus(it) },
+                        "pcm", ttsSpeed, ttsSemis
+                    )
+                    Engine.GOOGLE -> VideoMerger.toPcm(this, GoogleTts.synthesize(text), "mp3", ttsSpeed, ttsSemis)
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (engine == Engine.GOOGLE) throw e
+                val from = engine
+                engine = Engine.GOOGLE
+                lastFallbackReport = if (from == Engine.EDGE) EdgeTts.lastReport.ifEmpty { e.message.orEmpty() } else e.message.orEmpty()
+                engineNote = "⚠️ ${if (from == Engine.EDGE) "Edge" else "Gemini"} မရလို့ Google အသံသုံးတယ် — ${e.message?.take(100)}"
+                if (from == Engine.EDGE) File(filesDir, "edge_report.txt").writeText(lastFallbackReport)
+                setStatus(engineNote)
+            }
+        }
+    }
+
+    private suspend fun synthSegmentPcm(text: String): ByteArray {
+        val pcm = ByteArrayOutputStream()
+        for (chunk in chunkText(text, if (engine == Engine.GOOGLE) 180 else 500)) {
+            pcm.write(synthChunkPcm(chunk))
+            delay(100)
+        }
+        return pcm.toByteArray()
+    }
+
+    // --------------------------------------------------------- voice preview
     private fun previewVoice() {
         savePrefs()
-        val voice = if (spVoice.selectedItemPosition == 0) "my-MM-NilarNeural" else "my-MM-ThihaNeural"
-        val edgeVer = edgeOverride()
+        initEngine()
         btnPreview.isEnabled = false
-        setStatus("အသံ စမ်းနေပါတယ်...")
+        setStatus("အသံ စမ်းနေပါတယ် [${engineLabel()}]...")
         lifecycleScope.launch {
             try {
                 val sample = "မင်္ဂလာပါ၊ ဒါက ဒီအက်စ် ရီကက်ပ် တူးလ်ရဲ့ မြန်မာအသံ စမ်းသပ်မှု ဖြစ်ပါတယ်။"
-                val bytes = try {
-                    EdgeTts.synthesize(sample, voice, rateStr(), pitchStr(), edgeVer)
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    setStatus("⚠️ Edge မရလို့ Google အသံနဲ့ စမ်းပါတယ် (အမြန်နှုန်း/pitch မပါ)")
-                    showReport("Edge TTS မရပါ — အကြောင်းရင်း", EdgeTts.lastReport.ifEmpty { e.message.orEmpty() })
-                    GoogleTts.synthesize(sample)
+                val pcm = synthChunkPcm(sample, forceEdge = true)
+                if (lastFallbackReport.isNotEmpty()) {
+                    showReport("အသံ engine မရပါ — အကြောင်းရင်း", lastFallbackReport)
                 }
-                val f = File(cacheDir, "preview.mp3")
-                f.writeBytes(bytes)
+                val f = File(cacheDir, "preview.wav")
+                VideoMerger.writeWav24k(f, pcm)
                 player?.release()
                 player = MediaPlayer().apply {
                     setDataSource(f.absolutePath)
                     setOnCompletionListener {
                         it.release()
                         player = null
-                        tvStatus.text = ""
                     }
                     prepare()
                     start()
                 }
-                setStatus("▶ ဖွင့်နေပါတယ်...")
+                setStatus(if (engineNote.isNotEmpty()) engineNote else "▶ ဖွင့်နေပါတယ် [${engineLabel()}]")
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {
-                setStatus("❌ ${e.message}")
+                setStatus("❌ ${e.message?.lineSequence()?.firstOrNull().orEmpty()}")
+                showReport("အသံ မထွက်ပါ", "${e.javaClass.simpleName}: ${e.message}")
             } finally {
                 if (!busy) btnPreview.isEnabled = true
             }
@@ -682,10 +778,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     private suspend fun runPipeline(key: String, uri: Uri) {
-        val voice = if (spVoice.selectedItemPosition == 0) "my-MM-NilarNeural" else "my-MM-ThihaNeural"
-        val rate = rateStr()
-        val pitch = pitchStr()
-        val edgeVer = edgeOverride()
         val gModel = prefs.getString("gmodel", "gemini-3-flash-preview").orEmpty()
 
         val movieMs = videoDurationMs(uri)
@@ -720,44 +812,19 @@ class MainActivity : AppCompatActivity() {
         File(filesDir, "script.txt").writeText(scriptText)
         runOnUiThread { tvScript.text = scriptText }
 
-        // 4) TTS
-        var useEdge = true
-        setStatus("၄/၅ မြန်မာအသံ ပြင်ဆင်နေပါတယ်...")
-        try {
-            EdgeTts.synthesize("မင်္ဂလာပါ", voice, rate, pitch, edgeVer)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            useEdge = false
-            File(filesDir, "edge_report.txt").writeText(EdgeTts.lastReport)
-            setStatus("⚠️ Edge TTS မရလို့ Google အသံနဲ့ ဆက်လုပ်ပါမယ် — ${e.message}")
-            delay(2500)
-        }
-
-        val narrationBytes = ByteArrayOutputStream()
+        // 4) TTS (Edge / Gemini / Google → PCM 24kHz)
+        initEngine()
+        val pcmAll = ByteArrayOutputStream()
         val durations = ArrayList<Long>()
-        for ((i, s) in segs.withIndex()) {
-            setStatus("၄/၅ မြန်မာအသံထုတ်နေပါတယ် ${i + 1}/${segs.size}" + if (useEdge) "" else " (Google)")
+        for ((i, seg) in segs.withIndex()) {
+            setStatus("၄/၅ မြန်မာအသံထုတ်နေပါတယ် ${i + 1}/${segs.size} [${engineLabel()}]")
             updateProgress((i * 100) / segs.size)
-            val segBytes = ByteArrayOutputStream()
-            for (chunk in chunkText(s.text, if (useEdge) 500 else 180)) {
-                val b = if (useEdge) EdgeTts.synthesize(chunk, voice, rate, pitch, edgeVer)
-                else GoogleTts.synthesize(chunk)
-                segBytes.write(b)
-                delay(150)
-            }
-            val bytes = segBytes.toByteArray()
-            val ms = if (useEdge) bytes.size / 6L // 48kbps CBR = 6000 bytes/sec
-            else {
-                val tmp = File(cacheDir, "seg.mp3")
-                tmp.writeBytes(bytes)
-                mp3DurationMs(tmp) ?: (bytes.size / 4L)
-            }
-            durations += ms.coerceAtLeast(1000L)
-            narrationBytes.write(bytes)
+            val pcm = synthSegmentPcm(seg.text)
+            durations += (pcm.size * 1000L / 48000L).coerceAtLeast(800L)
+            pcmAll.write(pcm)
         }
-        val narration = File(cacheDir, "narration.mp3")
-        narration.writeBytes(narrationBytes.toByteArray())
+        val narration = File(cacheDir, "narration.wav")
+        VideoMerger.writeWav24k(narration, pcmAll.toByteArray())
 
         // 5) Merge
         setStatus("၅/၅ ဗီဒီယိုနဲ့ ပေါင်းနေပါတယ် (မိနစ်အနည်းငယ် ကြာနိုင်)...")
@@ -769,7 +836,7 @@ class MainActivity : AppCompatActivity() {
 
         val where = withContext(Dispatchers.IO) { saveToMovies(out) }
         updateProgress(100)
-        setStatus("✅ ပြီးပါပြီ — $where  [${VideoMerger.lastEncoder}]")
+        setStatus("✅ ပြီးပါပြီ — $where  [${VideoMerger.lastEncoder} · ${engineLabel()}]")
         if (outUri != null) runOnUiThread { btnOpen.visibility = View.VISIBLE }
     }
 
@@ -813,8 +880,9 @@ $transcript
 
     /**
      * Script တစ်ပိုင်းစီအတွက် scene ကို ဖြတ်ပြီး အမြန်နှုန်း ချိန်ညှိတယ်။
-     * Narration ရှည်ရင် video နှေးမယ်၊ scene ရှည်ပြီး narration တိုရင် video မြန်မယ်။
-     * ထွက်လာမယ့် ကြာချိန် = narration ကြာချိန် အတိအကျ။
+     * - narration က scene ထက်ရှည်ရင် နှေးတယ် (အများဆုံး ၀.၈ ဆ)၊ ဒီထက်ပိုလိုရင် scene ပတ်ဝန်းကျင် footage ကို ထပ်ယူတယ်
+     * - scene က narration ထက်ရှည်ရင် မြန်တယ် (အများဆုံး ၂ ဆ)
+     * - ထွက်လာမယ့် ကြာချိန် = narration ကြာချိန် အတိအကျ
      */
     private fun planClips(
         segs: List<GeminiClient.Seg>,
@@ -834,11 +902,14 @@ $transcript
             if (movieMs > 0) eMs = eMs.coerceAtMost(movieMs)
             val range = (eMs - sMs).coerceAtLeast(500L)
 
-            var speed = (range.toDouble() / d).coerceIn(0.6, 2.5)
+            var speed = (range.toDouble() / d).coerceIn(0.8, 2.0)
             if (speed in 0.95..1.05) speed = 1.0
             val srcLen = (d * speed).toLong()
 
-            var st = sMs
+            // scene ထက် ပိုယူရရင် ရှေ့ ၂၅% / နောက် ၇၅% ကို ချဲ့၊ scene ထက်နည်းရင် အလယ်ကိုယူ
+            var st = if (srcLen > range) sMs - ((srcLen - range) * 0.25).toLong()
+            else sMs + (range - srcLen) / 2
+            st = st.coerceAtLeast(0L)
             if (movieMs > 0 && st + srcLen > movieMs) st = (movieMs - srcLen).coerceAtLeast(0L)
             out.add(VideoMerger.Clip(st, st + srcLen, speed.toFloat()))
         }
