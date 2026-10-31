@@ -119,8 +119,9 @@ object EdgeTts {
         ).distinct()
         val list = ArrayList<Cfg>()
         workingCfg?.let { list.add(it) }
-        for (v in versions) {
-            for (st in 0..3) list.add(Cfg(v, st, false))
+        for ((idx, v) in versions.withIndex()) {
+            val styles = if (idx == 0) 0..3 else 0..1
+            for (st in styles) list.add(Cfg(v, st, false))
         }
         list.add(Cfg(versions.first(), 0, true))
         return list.distinct()
@@ -145,6 +146,7 @@ object EdgeTts {
         rep.append("ကွန်ရက်: ${ipInfo()}\n\n")
         var lastMsg = ""
         var headShown = false
+        var netErrors = 0
         val cfgs = configs(versionOverride)
 
         for (cfg in cfgs) {
@@ -178,9 +180,17 @@ object EdgeTts {
                     rep.append("$tag → ${e.message}\n")
                     break
                 } catch (e: Exception) {
-                    rep.append("$tag → ${e.javaClass.simpleName}: ${e.message}\n")
-                    lastReport = rep.toString()
-                    throw IOException("Edge TTS: ${e.javaClass.simpleName}: ${e.message}")
+                    // ကွန်ရက်/TLS ပြတ်တာ — နောက် config ကို ဆက်စမ်းမယ်၊ ၃ ခါဆက်တိုက်ဆို ရပ်မယ်
+                    netErrors++
+                    lastMsg = "${e.javaClass.simpleName}: ${e.message}"
+                    rep.append("$tag → $lastMsg\n")
+                    if (netErrors >= 3) {
+                        lastReport = rep.toString()
+                        failedAt = System.currentTimeMillis()
+                        throw IOException("Edge TTS: $lastMsg")
+                    }
+                    delay(1500)
+                    break
                 }
             }
         }
@@ -249,15 +259,22 @@ object EdgeTts {
 
     /** ဒီ ကွန်ရက်ရဲ့ အများသုံး IP နဲ့ နိုင်ငံကို ပြတယ် (VPN ထွက်ပေါက် စစ်ဖို့) */
     suspend fun ipInfo(): String = withContext(Dispatchers.IO) {
-        try {
-            val req = Request.Builder().url("https://ipinfo.io/json").header("User-Agent", "Mozilla/5.0").build()
-            http.newCall(req).execute().use { r ->
-                val j = org.json.JSONObject(r.body?.string().orEmpty())
-                "${j.optString("ip")} · ${j.optString("country")} · ${j.optString("city")} · ${j.optString("org")}"
+        val errs = ArrayList<String>()
+        for (url in listOf("https://ipinfo.io/json", "https://api.myip.com", "https://ipapi.co/json/")) {
+            try {
+                val req = Request.Builder().url(url).header("User-Agent", "Mozilla/5.0").build()
+                val txt = http.newCall(req).execute().use { r -> r.body?.string().orEmpty() }
+                val j = org.json.JSONObject(txt)
+                val ip = j.optString("ip")
+                val country = j.optString("country").ifEmpty { j.optString("cc") }
+                if (ip.isNotEmpty()) {
+                    return@withContext "$ip · $country · ${j.optString("city")} · ${j.optString("org")}".trim()
+                }
+            } catch (e: Exception) {
+                errs.add("${url.substringAfter("//").substringBefore('/')}: ${e.javaClass.simpleName}")
             }
-        } catch (e: Exception) {
-            "စစ်လို့မရ (${e.javaClass.simpleName})"
         }
+        "စစ်လို့မရ (${errs.joinToString(", ")})"
     }
 
     // ------------------------------------------------------ raw WebSocket client
