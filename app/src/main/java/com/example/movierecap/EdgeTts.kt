@@ -58,7 +58,8 @@ object EdgeTts {
     private class Forbidden(val serverMs: Long?, val statusLine: String, val head: String) : IOException(statusLine)
     private class NoAudio(detail: String) : IOException(detail)
 
-    private data class Cfg(val version: String, val minimal: Boolean, val shortVoice: Boolean)
+    /** style: 0 = Chrome/Edge header အစဉ်အတိုင်း, 1 = style0 + client-hints/fetch-metadata, 2 = အရင် "full", 3 = minimal */
+    private data class Cfg(val version: String, val style: Int, val shortVoice: Boolean)
 
     private val http = OkHttpClient.Builder()
         .connectTimeout(20, TimeUnit.SECONDS)
@@ -119,10 +120,9 @@ object EdgeTts {
         val list = ArrayList<Cfg>()
         workingCfg?.let { list.add(it) }
         for (v in versions) {
-            list.add(Cfg(v, false, false))
-            list.add(Cfg(v, true, false))
+            for (st in 0..3) list.add(Cfg(v, st, false))
         }
-        list.add(Cfg(versions.first(), false, true))
+        list.add(Cfg(versions.first(), 0, true))
         return list.distinct()
     }
 
@@ -141,16 +141,19 @@ object EdgeTts {
         val rep = StringBuilder()
         rep.append("ဖုန်းအချိန် (UTC): ${jsDate()}\n")
         rep.append("Voice: $voice  rate=$rate  pitch=$pitch\n")
-        rep.append("Transport: raw WebSocket (OkHttp မသုံး)\n\n")
+        rep.append("Transport: raw WebSocket (OkHttp မသုံး)\n")
+        rep.append("ကွန်ရက်: ${ipInfo()}\n\n")
         var lastMsg = ""
         var headShown = false
         val cfgs = configs(versionOverride)
 
         for (cfg in cfgs) {
             var tries = 0
-            while (tries < 2) {
+            val maxTries = if (cfg == cfgs.first()) 2 else 1
+            while (tries < maxTries) {
                 tries++
-                val tag = "v${cfg.version}${if (cfg.minimal) " min" else ""}${if (cfg.shortVoice) " shortVoice" else ""}"
+                val styleName = arrayOf("chrome", "chrome+hints", "full", "min")[cfg.style]
+                val tag = "v${cfg.version} $styleName${if (cfg.shortVoice) " shortVoice" else ""}"
                 try {
                     val bytes = once(text, voice, cfg, rate, pitch)
                     workingCfg = cfg
@@ -168,7 +171,7 @@ object EdgeTts {
                         rep.append("--- ဆာဗာ ပြန်ပေးတဲ့ header ---\n${e.head.take(900)}\n-----------------\n")
                         headShown = true
                     }
-                    if (tries >= 2) break
+                    if (tries >= maxTries) break
                     delay(200)
                 } catch (e: NoAudio) {
                     lastMsg = e.message.orEmpty()
@@ -242,6 +245,19 @@ object EdgeTts {
         }
     } catch (e: Exception) {
         "voices-list: ${e.javaClass.simpleName}: ${e.message}"
+    }
+
+    /** ဒီ ကွန်ရက်ရဲ့ အများသုံး IP နဲ့ နိုင်ငံကို ပြတယ် (VPN ထွက်ပေါက် စစ်ဖို့) */
+    suspend fun ipInfo(): String = withContext(Dispatchers.IO) {
+        try {
+            val req = Request.Builder().url("https://ipinfo.io/json").header("User-Agent", "Mozilla/5.0").build()
+            http.newCall(req).execute().use { r ->
+                val j = org.json.JSONObject(r.body?.string().orEmpty())
+                "${j.optString("ip")} · ${j.optString("country")} · ${j.optString("city")} · ${j.optString("org")}"
+            }
+        } catch (e: Exception) {
+            "စစ်လို့မရ (${e.javaClass.simpleName})"
+        }
     }
 
     // ------------------------------------------------------ raw WebSocket client
@@ -321,21 +337,57 @@ object EdgeTts {
             rnd.nextBytes(keyBytes)
             val key = Base64.encodeToString(keyBytes, Base64.NO_WRAP)
 
+            val major = cfg.version.substringBefore('.')
             val req = StringBuilder()
+            fun h(name: String, value: String) { req.append(name).append(": ").append(value).append("\r\n") }
             req.append("GET $path HTTP/1.1\r\n")
-            req.append("Host: $HOST\r\n")
-            req.append("Connection: Upgrade\r\n")
-            req.append("Upgrade: websocket\r\n")
-            req.append("Sec-WebSocket-Version: 13\r\n")
-            req.append("Sec-WebSocket-Key: $key\r\n")
-            req.append("Origin: $ORIGIN\r\n")
-            req.append("User-Agent: ${ua(cfg.version)}\r\n")
-            if (!cfg.minimal) {
-                req.append("Cookie: muid=${hex(16)};\r\n")
-                req.append("Pragma: no-cache\r\n")
-                req.append("Cache-Control: no-cache\r\n")
-                req.append("Accept-Language: en-US,en;q=0.9\r\n")
-                req.append("Accept-Encoding: gzip, deflate, br, zstd\r\n")
+            when (cfg.style) {
+                0, 1 -> {
+                    // Chrome/Edge က extension ကနေ WebSocket ချိတ်တဲ့ header အစဉ်အတိုင်း
+                    h("Host", HOST)
+                    h("Connection", "Upgrade")
+                    h("Pragma", "no-cache")
+                    h("Cache-Control", "no-cache")
+                    h("User-Agent", ua(cfg.version))
+                    h("Upgrade", "websocket")
+                    h("Origin", ORIGIN)
+                    if (cfg.style == 1) {
+                        h("Sec-CH-UA", "\"Microsoft Edge\";v=\"$major\", \"Chromium\";v=\"$major\", \"Not_A Brand\";v=\"24\"")
+                        h("Sec-CH-UA-Mobile", "?0")
+                        h("Sec-CH-UA-Platform", "\"Windows\"")
+                        h("Sec-Fetch-Dest", "websocket")
+                        h("Sec-Fetch-Mode", "websocket")
+                        h("Sec-Fetch-Site", "cross-site")
+                    }
+                    h("Sec-WebSocket-Version", "13")
+                    h("Accept-Encoding", "gzip, deflate, br, zstd")
+                    h("Accept-Language", "en-US,en;q=0.9")
+                    h("Cookie", "muid=${hex(16)};")
+                    h("Sec-WebSocket-Key", key)
+                }
+                2 -> {
+                    h("Host", HOST)
+                    h("Connection", "Upgrade")
+                    h("Upgrade", "websocket")
+                    h("Sec-WebSocket-Version", "13")
+                    h("Sec-WebSocket-Key", key)
+                    h("Origin", ORIGIN)
+                    h("User-Agent", ua(cfg.version))
+                    h("Cookie", "muid=${hex(16)};")
+                    h("Pragma", "no-cache")
+                    h("Cache-Control", "no-cache")
+                    h("Accept-Language", "en-US,en;q=0.9")
+                    h("Accept-Encoding", "gzip, deflate, br, zstd")
+                }
+                else -> {
+                    h("Host", HOST)
+                    h("Connection", "Upgrade")
+                    h("Upgrade", "websocket")
+                    h("Sec-WebSocket-Version", "13")
+                    h("Sec-WebSocket-Key", key)
+                    h("Origin", ORIGIN)
+                    h("User-Agent", ua(cfg.version))
+                }
             }
             req.append("\r\n")
             out.write(req.toString().toByteArray(Charsets.US_ASCII))
