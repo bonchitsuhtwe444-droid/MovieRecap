@@ -64,7 +64,7 @@ class LogoView(context: Context) : View(context) {
         c.scale(u, u)
 
         p.style = Paint.Style.FILL
-        p.shader = LinearGradient(0f, 0f, 108f, 108f, Color.parseColor("#3A3D47"), Color.parseColor("#14151A"), Shader.TileMode.CLAMP)
+        p.shader = LinearGradient(0f, 0f, 108f, 108f, Color.parseColor("#8B5CF6"), Color.parseColor("#312E81"), Shader.TileMode.CLAMP)
         c.drawRoundRect(RectF(0f, 0f, 108f, 108f), 24f, 24f, p)
 
         val inner = Path().apply {
@@ -82,7 +82,7 @@ class LogoView(context: Context) : View(context) {
         p.style = Paint.Style.STROKE
         p.strokeWidth = 3f
         p.strokeJoin = Paint.Join.ROUND
-        p.shader = LinearGradient(26f, 22f, 82f, 86f, Color.WHITE, Color.parseColor("#B5B9C4"), Shader.TileMode.CLAMP)
+        p.shader = LinearGradient(26f, 22f, 82f, 86f, Color.WHITE, Color.parseColor("#FFB3D9"), Shader.TileMode.CLAMP)
         c.drawPath(ring, p)
 
         val d = Path().apply {
@@ -93,7 +93,7 @@ class LogoView(context: Context) : View(context) {
             moveTo(38f, 46f); lineTo(38f, 62f); lineTo(46f, 54f); close()
         }
         p.style = Paint.Style.FILL
-        p.shader = LinearGradient(0f, 40f, 0f, 68f, Color.WHITE, Color.parseColor("#C4C8D2"), Shader.TileMode.CLAMP)
+        p.shader = LinearGradient(0f, 40f, 0f, 68f, Color.WHITE, Color.parseColor("#FFD6EC"), Shader.TileMode.CLAMP)
         c.drawPath(d, p)
 
         val s = Path().apply {
@@ -105,7 +105,7 @@ class LogoView(context: Context) : View(context) {
         p.strokeWidth = 4.5f
         p.strokeCap = Paint.Cap.SQUARE
         p.strokeJoin = Paint.Join.MITER
-        p.color = Color.parseColor("#EDEFF3")
+        p.color = Color.WHITE
         c.drawPath(s, p)
         c.restore()
     }
@@ -114,16 +114,20 @@ class LogoView(context: Context) : View(context) {
 class MainActivity : AppCompatActivity() {
 
     private companion object {
-        val C_CHAR = Color.parseColor("#1F2127")
-        val C_CHAR2 = Color.parseColor("#3A3D47")
-        val C_BG1 = Color.parseColor("#F5F6F8")
-        val C_BG2 = Color.parseColor("#DEDFE5")
-        val C_STROKE = Color.parseColor("#D0D3DA")
-        val C_INPUT = Color.parseColor("#F4F5F8")
-        val C_TEXT = Color.parseColor("#1F2127")
-        val C_TEXT2 = Color.parseColor("#6B6F7B")
-        val C_ACCENT = Color.parseColor("#4A5062")
-        val C_PLAT = Color.parseColor("#F2F3F6")
+        val C_CHAR = Color.parseColor("#4F46E5")
+        val C_CHAR2 = Color.parseColor("#EC4899")
+        val C_VIOLET = Color.parseColor("#9333EA")
+        val C_HOT1 = Color.parseColor("#FF8A1F")
+        val C_HOT2 = Color.parseColor("#FF3D81")
+        val C_PINK = Color.parseColor("#EC4899")
+        val C_BG1 = Color.parseColor("#F6F3FF")
+        val C_BG2 = Color.parseColor("#E1F3FF")
+        val C_STROKE = Color.parseColor("#E0D6FF")
+        val C_INPUT = Color.parseColor("#F8F6FF")
+        val C_TEXT = Color.parseColor("#231B4D")
+        val C_TEXT2 = Color.parseColor("#7A5FD0")
+        val C_ACCENT = Color.parseColor("#7C3AED")
+        val C_PLAT = Color.parseColor("#FFFFFF")
         const val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
         const val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
     }
@@ -193,7 +197,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun card() = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
-        background = rounded(Color.WHITE, dp(16), dp(1), C_STROKE)
+        background = rounded(Color.WHITE, dp(18), dp(1), C_STROKE)
+        elevation = dp(3).toFloat()
         setPadding(dp(12), dp(10), dp(12), dp(10))
     }
 
@@ -205,6 +210,12 @@ class MainActivity : AppCompatActivity() {
         letterSpacing = 0.06f
     }
 
+    private fun gradH(c1: Int, c2: Int, radius: Int, strokeW: Int = 0, strokeColor: Int = 0) =
+        GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, intArrayOf(c1, c2)).apply {
+            cornerRadius = radius.toFloat()
+            if (strokeW > 0) setStroke(strokeW, strokeColor)
+        }
+
     private fun styledButton(text: String, primary: Boolean): Button {
         val b = Button(this)
         b.text = text
@@ -212,12 +223,12 @@ class MainActivity : AppCompatActivity() {
         b.stateListAnimator = null
         b.textSize = 14f
         b.typeface = Typeface.DEFAULT_BOLD
-        b.setTextColor(if (primary) C_PLAT else C_TEXT)
-        val normal = if (primary) grad(C_CHAR2, C_CHAR, dp(14))
-        else grad(Color.WHITE, Color.parseColor("#E3E4E9"), dp(14), dp(1), Color.parseColor("#C5C8D0"))
-        val pressed = if (primary) grad(C_CHAR, Color.BLACK, dp(14))
-        else grad(Color.parseColor("#E3E4E9"), Color.parseColor("#CFD1D8"), dp(14), dp(1), Color.parseColor("#C5C8D0"))
-        val disabled = rounded(Color.parseColor("#C9CBD3"), dp(14))
+        b.setTextColor(if (primary) C_PLAT else C_ACCENT)
+        val normal = if (primary) gradH(C_HOT1, C_HOT2, dp(16))
+        else grad(Color.WHITE, Color.parseColor("#F1EAFF"), dp(14), dp(1), Color.parseColor("#CDBFFF"))
+        val pressed = if (primary) gradH(Color.parseColor("#E67800"), Color.parseColor("#E02A6B"), dp(16))
+        else grad(Color.parseColor("#F1EAFF"), Color.parseColor("#E0D4FF"), dp(14), dp(1), Color.parseColor("#CDBFFF"))
+        val disabled = rounded(Color.parseColor("#D9D3EE"), dp(if (primary) 16 else 14))
         val sl = StateListDrawable()
         sl.addState(intArrayOf(-android.R.attr.state_enabled), disabled)
         sl.addState(intArrayOf(android.R.attr.state_pressed), pressed)
@@ -271,7 +282,7 @@ class MainActivity : AppCompatActivity() {
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(16), dp(12), dp(12), dp(14))
             val r = dp(22).toFloat()
-            background = GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, intArrayOf(C_CHAR, C_CHAR2)).apply {
+            background = GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, intArrayOf(C_CHAR, C_VIOLET, C_CHAR2)).apply {
                 cornerRadii = floatArrayOf(0f, 0f, 0f, 0f, r, r, r, r)
             }
         }
@@ -286,14 +297,14 @@ class MainActivity : AppCompatActivity() {
         titles.addView(TextView(this).apply {
             text = "Developed by Dexter Syntax"
             textSize = 11f
-            setTextColor(Color.parseColor("#A9AEBA"))
+            setTextColor(Color.parseColor("#F3E8FF"))
             letterSpacing = 0.04f
         })
         header.addView(titles, lp(0, WRAP, 1f, l = 12))
         btnSettings = TextView(this).apply {
             text = "⚙"
             textSize = 24f
-            setTextColor(Color.parseColor("#C9CCD6"))
+            setTextColor(Color.WHITE)
             gravity = Gravity.CENTER
             setPadding(dp(10), dp(4), dp(10), dp(4))
         }
@@ -309,7 +320,7 @@ class MainActivity : AppCompatActivity() {
 
         // API key
         val c1 = card()
-        c1.addView(label("GEMINI API KEY"))
+        c1.addView(label("🔑  GEMINI API KEY"))
         etApiKey = EditText(this).apply {
             hint = "AIza..."
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
@@ -326,11 +337,11 @@ class MainActivity : AppCompatActivity() {
         // language + voice
         val c2 = card().apply { orientation = LinearLayout.HORIZONTAL }
         val colA = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        colA.addView(label("ဇာတ်ကား ဘာသာစကား"))
+        colA.addView(label("🌍  ဇာတ်ကား ဘာသာစကား"))
         spLang = spinner(langs.map { it.second })
         colA.addView(spLang, lp(MATCH, dp(42), t = 4))
         val colB = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        colB.addView(label("မြန်မာ အသံ"))
+        colB.addView(label("🎙  မြန်မာ အသံ"))
         spVoice = spinner(listOf("Nilar · Edge (မ)", "Thiha · Edge (ကျား)", "Gemini AI အသံ", "Google အသံ"))
         colB.addView(spVoice, lp(MATCH, dp(42), t = 4))
         c2.addView(colA, lp(0, WRAP, 1f, r = 5))
@@ -346,7 +357,7 @@ class MainActivity : AppCompatActivity() {
             max = 150
             progress = 50
             progressTintList = ColorStateList.valueOf(C_ACCENT)
-            thumbTintList = ColorStateList.valueOf(C_CHAR)
+            thumbTintList = ColorStateList.valueOf(C_PINK)
         }
         sCol.addView(tvSpeed)
         sCol.addView(sbSpeed, lp(MATCH, WRAP, t = 2))
@@ -356,7 +367,7 @@ class MainActivity : AppCompatActivity() {
             max = 100
             progress = 50
             progressTintList = ColorStateList.valueOf(C_ACCENT)
-            thumbTintList = ColorStateList.valueOf(C_CHAR)
+            thumbTintList = ColorStateList.valueOf(C_PINK)
         }
         pCol.addView(tvPitch)
         pCol.addView(sbPitch, lp(MATCH, WRAP, t = 2))
@@ -398,7 +409,7 @@ class MainActivity : AppCompatActivity() {
         progress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
             max = 100
             progressTintList = ColorStateList.valueOf(C_ACCENT)
-            progressBackgroundTintList = ColorStateList.valueOf(Color.parseColor("#C9CBD3"))
+            progressBackgroundTintList = ColorStateList.valueOf(Color.parseColor("#E4DBFF"))
             visibility = View.INVISIBLE
         }
         body.addView(progress, lp(MATCH, dp(6), t = 10))
@@ -418,7 +429,7 @@ class MainActivity : AppCompatActivity() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
-        rowS.addView(label("မြန်မာ SCRIPT"), lp(0, WRAP, 1f))
+        rowS.addView(label("📝  မြန်မာ SCRIPT"), lp(0, WRAP, 1f))
         val btnCopy = TextView(this).apply {
             text = "Copy"
             textSize = 12f
@@ -586,6 +597,16 @@ class MainActivity : AppCompatActivity() {
                     "${e.javaClass.simpleName}: ${e.message}"
                 }
             }).append("\n\n")
+            sb.append("Bing TTS: ")
+            try {
+                val b = BingTts.synthesize("မင်္ဂလာပါ", "my-MM-NilarNeural")
+                sb.append("✅ OK (${b.size} bytes)")
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                sb.append("❌ ${e.message}")
+            }
+            sb.append("\n\n")
             sb.append("Edge TTS:\n")
             try {
                 EdgeTts.synthesize("မင်္ဂလာပါ", "my-MM-NilarNeural", "+0%", "+0Hz", edgeOverride(), true)
@@ -623,7 +644,7 @@ class MainActivity : AppCompatActivity() {
 
     // --------------------------------------------------------- voice preview
     // ------------------------------------------------------------ TTS engines
-    private enum class Engine { EDGE, GEMINI, GOOGLE }
+    private enum class Engine { EDGE, BING, GEMINI, GOOGLE }
 
     private var engine = Engine.EDGE
     private var edgeVoice = "my-MM-NilarNeural"
@@ -640,6 +661,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun engineLabel() = when (engine) {
         Engine.EDGE -> "Edge"
+        Engine.BING -> "Bing"
         Engine.GEMINI -> "Gemini"
         Engine.GOOGLE -> "Google"
     }
@@ -679,6 +701,7 @@ class MainActivity : AppCompatActivity() {
                         EdgeTts.synthesize(text, edgeVoice, ttsRate, ttsPitch, edgeVerOverride, forceEdge),
                         "mp3", 1.0, 0.0
                     )
+                    Engine.BING -> VideoMerger.toPcm(this, BingTts.synthesize(text, edgeVoice), "mp3", ttsSpeed, ttsSemis)
                     Engine.GEMINI -> VideoMerger.toPcm(
                         this,
                         GeminiTts.synthesize(geminiKey, geminiTtsModel, geminiTtsVoice, text) { setStatus(it) },
@@ -691,10 +714,12 @@ class MainActivity : AppCompatActivity() {
             } catch (e: Exception) {
                 if (engine == Engine.GOOGLE) throw e
                 val from = engine
-                engine = Engine.GOOGLE
-                lastFallbackReport = if (from == Engine.EDGE) EdgeTts.lastReport.ifEmpty { e.message.orEmpty() } else e.message.orEmpty()
-                engineNote = "⚠️ ${if (from == Engine.EDGE) "Edge" else "Gemini"} မရလို့ Google အသံသုံးတယ် — ${e.message?.take(100)}"
-                if (from == Engine.EDGE) File(filesDir, "edge_report.txt").writeText(lastFallbackReport)
+                val fromName = engineLabel()
+                engine = if (from == Engine.EDGE) Engine.BING else Engine.GOOGLE
+                val rep = if (from == Engine.EDGE) EdgeTts.lastReport.ifEmpty { e.message.orEmpty() } else e.message.orEmpty()
+                lastFallbackReport = if (lastFallbackReport.isEmpty()) "[$fromName]\n$rep" else lastFallbackReport + "\n\n[$fromName]\n$rep"
+                engineNote = "⚠️ $fromName မရလို့ ${engineLabel()} သုံးတယ် — ${e.message?.take(90)}"
+                if (from == Engine.EDGE) File(filesDir, "edge_report.txt").writeText(rep)
                 setStatus(engineNote)
             }
         }
