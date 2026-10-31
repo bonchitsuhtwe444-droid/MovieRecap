@@ -559,7 +559,45 @@ class MainActivity : AppCompatActivity() {
                     .apply()
             }
             .setNegativeButton("မလုပ်တော့ဘူး", null)
+            .setNeutralButton("ကွန်ရက်စစ်မယ်") { _, _ -> runNetCheck() }
             .show()
+    }
+
+    /** VPN ထွက်ပေါက် နိုင်ငံ၊ Gemini နဲ့ Edge ချိတ်လို့ရမရ စစ်တယ် */
+    private fun runNetCheck() {
+        setStatus("ကွန်ရက် စစ်နေပါတယ်... (၁ မိနစ်လောက်ကြာနိုင်)")
+        val key = etApiKey.text.toString().trim()
+        lifecycleScope.launch {
+            val sb = StringBuilder()
+            sb.append("IP: ").append(EdgeTts.ipInfo()).append("\n\n")
+            sb.append("Gemini: ").append(withContext(Dispatchers.IO) {
+                try {
+                    val c = okhttp3.OkHttpClient()
+                    val rq = okhttp3.Request.Builder()
+                        .url("https://generativelanguage.googleapis.com/v1beta/models")
+                        .header("x-goog-api-key", key).build()
+                    c.newCall(rq).execute().use { r ->
+                        val b = r.body?.string().orEmpty()
+                        if (r.code == 200) "OK (HTTP 200)"
+                        else if (b.contains("location is not supported")) "❌ ဒီနိုင်ငံ/VPN ကို ထောက်ပံ့မထားပါ"
+                        else "HTTP ${r.code}: ${b.take(120)}"
+                    }
+                } catch (e: Exception) {
+                    "${e.javaClass.simpleName}: ${e.message}"
+                }
+            }).append("\n\n")
+            sb.append("Edge TTS:\n")
+            try {
+                EdgeTts.synthesize("မင်္ဂလာပါ", "my-MM-NilarNeural", "+0%", "+0Hz", edgeOverride(), true)
+                sb.append("✅ အလုပ်လုပ်တယ် (${EdgeTts.lastReport})")
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                sb.append(EdgeTts.lastReport.ifEmpty { e.message.orEmpty() })
+            }
+            setStatus("")
+            showReport("ကွန်ရက် စစ်ဆေးချက်", sb.toString())
+        }
     }
 
     private fun setBusy(b: Boolean) {
