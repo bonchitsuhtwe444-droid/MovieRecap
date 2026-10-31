@@ -54,6 +54,9 @@ object GeminiClient {
                         log("⚠️ $lastErr၊ ${20 * attempt} စက္ကန့်စောင့်မယ်")
                         delay(20_000L * attempt)
                     }
+                    code == 400 && resp.contains("location is not supported") -> throw IOException(
+                        "Gemini က ဒီ ကွန်ရက်/VPN ရဲ့ နိုင်ငံကို ထောက်ပံ့မထားပါ။ VPN ကို US / Singapore / Japan လို ထောက်ပံ့တဲ့ နိုင်ငံကို ပြောင်းပြီး ပြန်စမ်းပါ။"
+                    )
                     else -> throw IOException("Gemini HTTP $code: ${resp.take(300)}")
                 }
             }
