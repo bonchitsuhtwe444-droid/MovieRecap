@@ -654,7 +654,8 @@ class MainActivity : AppCompatActivity() {
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {
-                setStatus("❌ ${e.javaClass.simpleName}: ${e.message}")
+                setStatus("❌ ${e.javaClass.simpleName}: ${e.message?.lineSequence()?.firstOrNull().orEmpty()}")
+                showReport("Error အသေးစိတ်", "${e.javaClass.simpleName}: ${e.message}")
             } finally {
                 setBusy(false)
             }
@@ -764,11 +765,11 @@ class MainActivity : AppCompatActivity() {
         val clips = planClips(segs, durations, movieMs)
         val out = File(cacheDir, "recap_out.mp4")
         out.delete()
-        VideoMerger.merge(this, uri, narration, clips, out)
+        VideoMerger.merge(this, uri, narration, clips, out) { updateProgress(it) }
 
         val where = withContext(Dispatchers.IO) { saveToMovies(out) }
         updateProgress(100)
-        setStatus("✅ ပြီးပါပြီ — $where")
+        setStatus("✅ ပြီးပါပြီ — $where  [${VideoMerger.lastEncoder}]")
         if (outUri != null) runOnUiThread { btnOpen.visibility = View.VISIBLE }
     }
 
