@@ -77,6 +77,28 @@ object BingTts {
         }
     }
 
+    /** ဒီ ကွန်ရက်ရဲ့ IP နဲ့ နိုင်ငံ (VPN ထွက်ပေါက် စစ်ဖို့) */
+    suspend fun ipInfo(): String = withContext(Dispatchers.IO) {
+        val errs = ArrayList<String>()
+        for (url in listOf("https://ipinfo.io/json", "https://api.myip.com", "https://ipapi.co/json/")) {
+            try {
+                val req = Request.Builder().url(url).header("User-Agent", "Mozilla/5.0").build()
+                val txt = http.newCall(req).execute().use { r -> r.body?.string().orEmpty() }
+                val j = org.json.JSONObject(txt)
+                val ip = j.optString("ip")
+                val country = j.optString("country").ifEmpty { j.optString("cc") }
+                if (ip.isNotEmpty()) {
+                    return@withContext "$ip · $country · ${j.optString("city")} · ${j.optString("org")}".trim()
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                errs.add("${url.substringAfter("//").substringBefore('/')}: ${e.javaClass.simpleName}")
+            }
+        }
+        "စစ်လို့မရ (${errs.joinToString(", ")})"
+    }
+
     /** MP3 bytes ပြန်ပေးတယ် */
     suspend fun synthesize(text: String, voice: String): ByteArray = withContext(Dispatchers.IO) {
         var last = ""
