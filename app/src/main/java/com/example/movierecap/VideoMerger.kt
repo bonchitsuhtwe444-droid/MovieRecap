@@ -20,7 +20,8 @@ import kotlin.math.roundToInt
  */
 object VideoMerger {
 
-    data class Clip(val startMs: Long, val endMs: Long, val speed: Float = 1f)
+    /** frames > 0 ဆိုရင် output ကို frame အရေအတွက် အတိအကျ ပြုလုပ်ပေး (လိုရင် နောက်ဆုံးပုံကို ထိန်းပေး) */
+    data class Clip(val startMs: Long, val endMs: Long, val speed: Float = 1f, val frames: Int = 0)
 
     @Volatile var lastEncoder: String = ""
 
@@ -55,10 +56,16 @@ object VideoMerger {
         val lenSec = f((c.endMs - c.startMs) / 1000.0)
         val speed = c.speed.toDouble().coerceIn(0.25, 4.0)
         val rateFilter = if (smooth) "framerate=fps=30:interp_start=0:interp_end=255:scene=14" else "fps=30"
-        val vf = "setpts=(PTS-STARTPTS)/${f(speed, 4)},$rateFilter," +
+        val padFilter = if (c.frames > 0) {
+            // footage မလောက်ရင်တောင် frame အရေအတွက် ပြည့်အောင် နောက်ဆုံးပုံကို လုံလောက်စွာ ထိန်းထား (-frames:v က ကျန်တာဖြတ်)
+            val padSec = c.frames / 30.0 + 1.0
+            ",tpad=stop_mode=clone:stop_duration=${f(padSec)}"
+        } else ""
+        val vf = "setpts=(PTS-STARTPTS)/${f(speed, 4)},$rateFilter$padFilter," +
                 "scale='if(gt(iw,ih),-2,720)':'if(gt(iw,ih),720,-2)',format=yuv420p"
         val args = ArrayList<String>()
         args += listOf("-y", "-hide_banner", "-ss", startSec, "-t", lenSec, "-i", saf, "-an", "-sn", "-dn", "-vf", vf)
+        if (c.frames > 0) args += listOf("-frames:v", c.frames.toString())
         args += enc.args
         args += outFile.absolutePath
         return run(args)
