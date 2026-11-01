@@ -31,6 +31,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.ArrayAdapter
+import android.widget.CheckBox
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
@@ -141,6 +142,8 @@ class MainActivity : AppCompatActivity() {
     private val modelDir by lazy { File(filesDir, "vosk_model") }
 
     private lateinit var etApiKey: EditText
+    private lateinit var tvEye: TextView
+    private var keyHidden = false
     private lateinit var spLang: Spinner
     private lateinit var spVoice: Spinner
     private lateinit var sbSpeed: SeekBar
@@ -320,18 +323,37 @@ class MainActivity : AppCompatActivity() {
 
         // API key
         val c1 = card()
-        c1.addView(label("🔑  GEMINI API KEY"))
+        val keyHead = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        keyHead.addView(label("🔑  GEMINI API KEY"), lp(0, WRAP, 1f))
+        tvEye = TextView(this).apply {
+            text = "ဖျောက်မယ်"
+            textSize = 12f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(C_ACCENT)
+            setPadding(dp(10), dp(2), dp(4), dp(2))
+        }
+        keyHead.addView(tvEye, lp(WRAP, WRAP))
+        c1.addView(keyHead)
         etApiKey = EditText(this).apply {
             hint = "AIza..."
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
-            setSingleLine()
-            textSize = 14f
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or
+                    InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS or InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
+            minLines = 1
+            maxLines = 3
+            textSize = 13f
             setTextColor(C_TEXT)
             setHintTextColor(Color.parseColor("#9A9EAA"))
             background = rounded(C_INPUT, dp(10), dp(1), C_STROKE)
-            setPadding(dp(12), 0, dp(12), 0)
+            setPadding(dp(12), dp(9), dp(12), dp(9))
         }
-        c1.addView(etApiKey, lp(MATCH, dp(42), t = 4))
+        c1.addView(etApiKey, lp(MATCH, WRAP, t = 4))
+        tvEye.setOnClickListener {
+            keyHidden = !keyHidden
+            applyKeyVisibility()
+        }
         body.addView(c1, lp(MATCH, WRAP, t = 8))
 
         // language + voice
@@ -342,7 +364,7 @@ class MainActivity : AppCompatActivity() {
         colA.addView(spLang, lp(MATCH, dp(42), t = 4))
         val colB = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         colB.addView(label("🎙  မြန်မာ အသံ"))
-        spVoice = spinner(listOf("Nilar · Edge (မ)", "Thiha · Edge (ကျား)", "Gemini AI အသံ", "Google အသံ"))
+        spVoice = spinner(listOf("Nilar · Bing (မ)", "Thiha · Bing (ကျား)", "Gemini AI အသံ", "Google အသံ"))
         colB.addView(spVoice, lp(MATCH, dp(42), t = 4))
         c2.addView(colA, lp(0, WRAP, 1f, r = 5))
         c2.addView(colB, lp(0, WRAP, 1f, l = 5))
@@ -471,6 +493,7 @@ class MainActivity : AppCompatActivity() {
         setContentView(buildUi())
 
         etApiKey.setText(prefs.getString("key", ""))
+        applyKeyVisibility()
         spLang.setSelection(prefs.getInt("lang", 0).coerceIn(0, langs.size - 1))
         spVoice.setSelection(prefs.getInt("voice", 0).coerceIn(0, 3))
         sbSpeed.progress = prefs.getInt("speed", 50)
@@ -506,12 +529,25 @@ class MainActivity : AppCompatActivity() {
         super.onDestroy()
     }
 
+    private fun applyKeyVisibility() {
+        val pos = etApiKey.selectionStart.coerceAtLeast(0)
+        if (keyHidden) {
+            etApiKey.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+            tvEye.text = "ပြမယ်"
+        } else {
+            etApiKey.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or
+                    InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS or InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
+            tvEye.text = "ဖျောက်မယ်"
+        }
+        etApiKey.setSelection(pos.coerceAtMost(etApiKey.text.length))
+    }
+
     private fun rateStr() = String.format(Locale.US, "%+d%%", sbSpeed.progress - 50)
-    private fun pitchStr() = String.format(Locale.US, "%+dHz", sbPitch.progress - 50)
+    private fun pitchStr() = String.format(Locale.US, "%+.1f", (sbPitch.progress - 50) / 8.0)
 
     private fun updateVoiceLabels() {
         tvSpeed.text = "အမြန်နှုန်း  ${rateStr()}"
-        tvPitch.text = "အသံ Pitch  ${pitchStr()}"
+        tvPitch.text = "အသံ Pitch  ${pitchStr()} st"
     }
 
     private fun refreshButtons() {
@@ -538,12 +574,6 @@ class MainActivity : AppCompatActivity() {
             setText(prefs.getString("gmodel", "gemini-3-flash-preview"))
             setSingleLine()
         }
-        val etE = EditText(this).apply {
-            hint = "Edge version (အလိုအလျောက်ဆို အလွတ်ထားပါ)"
-            val saved = prefs.getString("edgever", "").orEmpty()
-            setText(if (saved == "143.0.3650.75") "" else saved)
-            setSingleLine()
-        }
         val etTm = EditText(this).apply {
             hint = "Gemini TTS model (အလွတ်ထားရင် auto)"
             setText(prefs.getString("ttsmodel", ""))
@@ -555,18 +585,23 @@ class MainActivity : AppCompatActivity() {
             setSingleLine()
         }
         box.addView(etG)
-        box.addView(etE)
         box.addView(etTm)
         box.addView(etTv)
+        val cbSmooth = CheckBox(this).apply {
+            text = "ရုပ်ချောမွေ့စေ (blend) အမြဲသုံး — မူရင်း video ထစ်နေရင် auto လုပ်ပေးပြီးသား"
+            isChecked = prefs.getBoolean("smooth", false)
+            textSize = 13f
+        }
+        box.addView(cbSmooth)
         AlertDialog.Builder(this)
             .setTitle("Advanced")
             .setView(box)
             .setPositiveButton("သိမ်းမယ်") { _, _ ->
                 prefs.edit()
                     .putString("gmodel", etG.text.toString().trim())
-                    .putString("edgever", etE.text.toString().trim())
                     .putString("ttsmodel", etTm.text.toString().trim())
                     .putString("ttsvoice", etTv.text.toString().trim())
+                    .putBoolean("smooth", cbSmooth.isChecked)
                     .apply()
             }
             .setNegativeButton("မလုပ်တော့ဘူး", null)
@@ -574,13 +609,13 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
-    /** VPN ထွက်ပေါက် နိုင်ငံ၊ Gemini နဲ့ Edge ချိတ်လို့ရမရ စစ်တယ် */
+    /** VPN ထွက်ပေါက် နိုင်ငံ၊ Gemini နဲ့ Bing ချိတ်လို့ရမရ စစ်တယ် */
     private fun runNetCheck() {
         setStatus("ကွန်ရက် စစ်နေပါတယ်... (၁ မိနစ်လောက်ကြာနိုင်)")
         val key = etApiKey.text.toString().trim()
         lifecycleScope.launch {
             val sb = StringBuilder()
-            sb.append("IP: ").append(EdgeTts.ipInfo()).append("\n\n")
+            sb.append("IP: ").append(BingTts.ipInfo()).append("\n\n")
             sb.append("Gemini: ").append(withContext(Dispatchers.IO) {
                 try {
                     val c = okhttp3.OkHttpClient()
@@ -607,15 +642,6 @@ class MainActivity : AppCompatActivity() {
                 sb.append("❌ ${e.message}")
             }
             sb.append("\n\n")
-            sb.append("Edge TTS:\n")
-            try {
-                EdgeTts.synthesize("မင်္ဂလာပါ", "my-MM-NilarNeural", "+0%", "+0Hz", edgeOverride(), true)
-                sb.append("✅ အလုပ်လုပ်တယ် (${EdgeTts.lastReport})")
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                sb.append(EdgeTts.lastReport.ifEmpty { e.message.orEmpty() })
-            }
             setStatus("")
             showReport("ကွန်ရက် စစ်ဆေးချက်", sb.toString())
         }
@@ -644,15 +670,12 @@ class MainActivity : AppCompatActivity() {
 
     // --------------------------------------------------------- voice preview
     // ------------------------------------------------------------ TTS engines
-    private enum class Engine { EDGE, BING, GEMINI, GOOGLE }
+    private enum class Engine { BING, GEMINI, GOOGLE }
 
-    private var engine = Engine.EDGE
-    private var edgeVoice = "my-MM-NilarNeural"
-    private var ttsRate = "+0%"
-    private var ttsPitch = "+0Hz"
+    private var engine = Engine.BING
+    private var bingVoice = "my-MM-NilarNeural"
     private var ttsSpeed = 1.0
     private var ttsSemis = 0.0
-    private var edgeVerOverride = ""
     private var geminiKey = ""
     private var geminiTtsModel = ""
     private var geminiTtsVoice = "Kore"
@@ -660,7 +683,6 @@ class MainActivity : AppCompatActivity() {
     private var lastFallbackReport = ""
 
     private fun engineLabel() = when (engine) {
-        Engine.EDGE -> "Edge"
         Engine.BING -> "Bing"
         Engine.GEMINI -> "Gemini"
         Engine.GOOGLE -> "Google"
@@ -669,16 +691,13 @@ class MainActivity : AppCompatActivity() {
     private fun initEngine() {
         val idx = spVoice.selectedItemPosition
         engine = when (idx) {
-            0, 1 -> Engine.EDGE
+            0, 1 -> Engine.BING
             2 -> Engine.GEMINI
             else -> Engine.GOOGLE
         }
-        edgeVoice = if (idx == 1) "my-MM-ThihaNeural" else "my-MM-NilarNeural"
-        ttsRate = rateStr()
-        ttsPitch = pitchStr()
+        bingVoice = if (idx == 1) "my-MM-ThihaNeural" else "my-MM-NilarNeural"
         ttsSpeed = 1.0 + (sbSpeed.progress - 50) / 100.0
         ttsSemis = (sbPitch.progress - 50) / 8.0
-        edgeVerOverride = edgeOverride()
         geminiKey = etApiKey.text.toString().trim()
         geminiTtsModel = prefs.getString("ttsmodel", "").orEmpty()
         geminiTtsVoice = prefs.getString("ttsvoice", "Kore").orEmpty().ifEmpty { "Kore" }
@@ -687,7 +706,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     /** စာတိုတစ်ခု → PCM (24kHz mono s16le)။ engine မရရင် Google ကို အလိုအလျောက် ပြောင်းတယ်။ */
-    private suspend fun synthChunkPcm(text: String, forceEdge: Boolean = false): ByteArray {
+    private suspend fun synthChunkPcm(text: String): ByteArray {
         while (true) {
             if (engine == Engine.GOOGLE && text.length > 180) {
                 val bos = ByteArrayOutputStream()
@@ -696,12 +715,7 @@ class MainActivity : AppCompatActivity() {
             }
             try {
                 return when (engine) {
-                    Engine.EDGE -> VideoMerger.toPcm(
-                        this,
-                        EdgeTts.synthesize(text, edgeVoice, ttsRate, ttsPitch, edgeVerOverride, forceEdge),
-                        "mp3", 1.0, 0.0
-                    )
-                    Engine.BING -> VideoMerger.toPcm(this, BingTts.synthesize(text, edgeVoice), "mp3", ttsSpeed, ttsSemis)
+                    Engine.BING -> VideoMerger.toPcm(this, BingTts.synthesize(text, bingVoice), "mp3", ttsSpeed, ttsSemis)
                     Engine.GEMINI -> VideoMerger.toPcm(
                         this,
                         GeminiTts.synthesize(geminiKey, geminiTtsModel, geminiTtsVoice, text) { setStatus(it) },
@@ -713,13 +727,11 @@ class MainActivity : AppCompatActivity() {
                 throw e
             } catch (e: Exception) {
                 if (engine == Engine.GOOGLE) throw e
-                val from = engine
                 val fromName = engineLabel()
-                engine = if (from == Engine.EDGE) Engine.BING else Engine.GOOGLE
-                val rep = if (from == Engine.EDGE) EdgeTts.lastReport.ifEmpty { e.message.orEmpty() } else e.message.orEmpty()
+                engine = Engine.GOOGLE
+                val rep = e.message.orEmpty()
                 lastFallbackReport = if (lastFallbackReport.isEmpty()) "[$fromName]\n$rep" else lastFallbackReport + "\n\n[$fromName]\n$rep"
                 engineNote = "⚠️ $fromName မရလို့ ${engineLabel()} သုံးတယ် — ${e.message?.take(90)}"
-                if (from == Engine.EDGE) File(filesDir, "edge_report.txt").writeText(rep)
                 setStatus(engineNote)
             }
         }
@@ -743,7 +755,7 @@ class MainActivity : AppCompatActivity() {
         lifecycleScope.launch {
             try {
                 val sample = "မင်္ဂလာပါ၊ ဒါက ဒီအက်စ် ရီကက်ပ် တူးလ်ရဲ့ မြန်မာအသံ စမ်းသပ်မှု ဖြစ်ပါတယ်။"
-                val pcm = synthChunkPcm(sample, forceEdge = true)
+                val pcm = synthChunkPcm(sample)
                 if (lastFallbackReport.isNotEmpty()) {
                     showReport("အသံ engine မရပါ — အကြောင်းရင်း", lastFallbackReport)
                 }
@@ -788,11 +800,6 @@ class MainActivity : AppCompatActivity() {
             }
             .setNegativeButton("ပိတ်မယ်", null)
             .show()
-    }
-
-    private fun edgeOverride(): String {
-        val v = prefs.getString("edgever", "").orEmpty()
-        return if (v == "143.0.3650.75") "" else v
     }
 
     // ------------------------------------------------------------- pipeline
@@ -875,7 +882,7 @@ class MainActivity : AppCompatActivity() {
         File(filesDir, "script.txt").writeText(scriptText)
         runOnUiThread { tvScript.text = scriptText }
 
-        // 4) TTS (Edge / Gemini / Google → PCM 24kHz)
+        // 4) TTS (Bing / Gemini / Google → PCM 24kHz)
         initEngine()
         val pcmAll = ByteArrayOutputStream()
         val durations = ArrayList<Long>()
@@ -890,16 +897,20 @@ class MainActivity : AppCompatActivity() {
         VideoMerger.writeWav24k(narration, pcmAll.toByteArray())
 
         // 5) Merge
-        setStatus("၅/၅ ဗီဒီယိုနဲ့ ပေါင်းနေပါတယ် (မိနစ်အနည်းငယ် ကြာနိုင်)...")
+        setStatus("၅/၅ မူရင်း video ရဲ့ frame တွေကို စစ်ဆေးနေပါတယ်...")
         updateProgress(0)
+        val uniq = VideoMerger.sourceUniqueFps(this, uri, movieMs)
+        val smooth = prefs.getBoolean("smooth", false) || (uniq != null && uniq < 14.0)
+        val srcNote = if (uniq != null) "မူရင်း ပုံအသစ် ~${String.format(Locale.US, "%.1f", uniq)}/စက္ကန့်" else ""
+        setStatus("၅/၅ ဗီဒီယိုနဲ့ ပေါင်းနေပါတယ်${if (smooth) " (ချောမွေ့စေမယ်)" else ""} — $srcNote")
         val clips = planClips(segs, durations, movieMs)
         val out = File(cacheDir, "recap_out.mp4")
         out.delete()
-        VideoMerger.merge(this, uri, narration, clips, out) { updateProgress(it) }
+        VideoMerger.merge(this, uri, narration, clips, out, smooth) { updateProgress(it) }
 
         val where = withContext(Dispatchers.IO) { saveToMovies(out) }
         updateProgress(100)
-        setStatus("✅ ပြီးပါပြီ — $where  [${VideoMerger.lastEncoder} · ${engineLabel()}]")
+        setStatus("✅ ပြီးပါပြီ — $where  [${VideoMerger.lastEncoder} · ${engineLabel()}${if (smooth) " · blend" else ""}] $srcNote")
         if (outUri != null) runOnUiThread { btnOpen.visibility = View.VISIBLE }
     }
 
