@@ -45,22 +45,53 @@ object VideoMerger {
         if (text.contains("h264_mediacodec")) {
             list.add(Enc("h264_mediacodec", listOf("-c:v", "h264_mediacodec", "-b:v", "4M")))
         }
-        list.add(Enc("mpeg4", listOf("-c:v", "mpeg4", "-q:v", "3", "-pix_fmt", "yuv420p")))
+        list.add(Enc("mpeg4", listOf("-c:v", "mpeg4", "-q:v", "2", "-g", "60", "-pix_fmt", "yuv420p")))
         return list
     }
 
-    private fun encodeSegment(context: Context, videoUri: Uri, c: Clip, outFile: File, enc: Enc): Pair<Boolean, String> {
+    private fun encodeSegment(context: Context, videoUri: Uri, c: Clip, outFile: File, enc: Enc, smooth: Boolean): Pair<Boolean, String> {
         val saf = FFmpegKitConfig.getSafParameterForRead(context, videoUri)
         val startSec = f(c.startMs / 1000.0)
         val lenSec = f((c.endMs - c.startMs) / 1000.0)
         val speed = c.speed.toDouble().coerceIn(0.25, 4.0)
-        val vf = "setpts=(PTS-STARTPTS)/${f(speed, 4)},fps=30," +
+        val rateFilter = if (smooth) "framerate=fps=30:interp_start=0:interp_end=255:scene=14" else "fps=30"
+        val vf = "setpts=(PTS-STARTPTS)/${f(speed, 4)},$rateFilter," +
                 "scale='if(gt(iw,ih),-2,720)':'if(gt(iw,ih),720,-2)',format=yuv420p"
         val args = ArrayList<String>()
         args += listOf("-y", "-hide_banner", "-ss", startSec, "-t", lenSec, "-i", saf, "-an", "-sn", "-dn", "-vf", vf)
         args += enc.args
         args += outFile.absolutePath
         return run(args)
+    }
+
+    /**
+     * မူရင်း video ထဲမှာ စက္ကန့်တိုင်း ပုံအသစ် ဘယ်နှပုံ တကယ်ပြောင်းလဲလဲ (ထပ်နေတဲ့ frame မရေ) ခန့်မှန်းတယ်။
+     * ၂ မှ ၅ fps လောက်ပဲရှိရင် မူရင်းကိုယ်တိုင် ထစ်နေတာ။
+     */
+    suspend fun sourceUniqueFps(context: Context, uri: Uri, movieMs: Long): Double? = withContext(Dispatchers.IO) {
+        try {
+            var best: Double? = null
+            val starts = if (movieMs > 20_000L) listOf(movieMs * 0.25, movieMs * 0.6) else listOf(0.0)
+            val sec = 5.0
+            for (st in starts) {
+                val saf = FFmpegKitConfig.getSafParameterForRead(context, uri)
+                val s = FFmpegKit.executeWithArguments(
+                    arrayOf(
+                        "-hide_banner", "-ss", f(st / 1000.0), "-t", f(sec), "-i", saf,
+                        "-an", "-sn", "-dn", "-vf", "mpdecimate,showinfo", "-f", "null", "-"
+                    )
+                )
+                val log = s.allLogsAsString ?: ""
+                val n = Regex("Parsed_showinfo_\\d+ @ [^\\]]+\\]\\s+n:\\s*\\d+").findAll(log).count()
+                if (n > 0) {
+                    val fps = n / sec
+                    best = maxOf(best ?: 0.0, fps)
+                }
+            }
+            best
+        } catch (e: Exception) {
+            null
+        }
     }
 
     // ---------------------------------------------------------------- audio tools
@@ -137,6 +168,7 @@ object VideoMerger {
         narration: File,
         clips: List<Clip>,
         out: File,
+        smooth: Boolean = false,
         onProgress: (Int) -> Unit = {}
     ) {
         withContext(Dispatchers.IO) {
@@ -154,7 +186,7 @@ object VideoMerger {
                     var lastLog = ""
                     for (e in encoders) {
                         seg.delete()
-                        val (ok, log) = encodeSegment(context, videoUri, c, seg, e)
+                        val (ok, log) = encodeSegment(context, videoUri, c, seg, e, smooth)
                         if (ok && seg.length() > 0) {
                             chosen = e
                             break
@@ -164,7 +196,7 @@ object VideoMerger {
                     if (chosen == null) throw IOException("FFmpeg encoder တစ်ခုမှ အလုပ်မလုပ်ပါ:\n$lastLog")
                     lastEncoder = chosen.name
                 } else {
-                    val (ok, log) = encodeSegment(context, videoUri, c, seg, chosen)
+                    val (ok, log) = encodeSegment(context, videoUri, c, seg, chosen, smooth)
                     if (!ok || seg.length() == 0L) throw IOException("Scene ${i + 1}/${clips.size} ဖြတ်လို့မရပါ:\n$log")
                 }
                 segFiles.add(seg)
