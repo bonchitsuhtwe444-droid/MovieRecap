@@ -588,7 +588,7 @@ class MainActivity : AppCompatActivity() {
         box.addView(etTm)
         box.addView(etTv)
         val cbSmooth = CheckBox(this).apply {
-            text = "ရုပ်ချောမွေ့စေ (blend) အမြဲသုံး — မူရင်း video ထစ်နေရင် auto လုပ်ပေးပြီးသား"
+            text = "ရုပ်ချောမွေ့စေ (blend) — ထစ်တာလျော့ပေမယ့် ရုပ်ထပ်ပေါ်တတ်လို့ မလိုရင် မဖွင့်ပါနဲ့"
             isChecked = prefs.getBoolean("smooth", false)
             textSize = 13f
         }
@@ -849,14 +849,13 @@ class MainActivity : AppCompatActivity() {
 
     private suspend fun runPipeline(key: String, uri: Uri) {
         val gModel = prefs.getString("gmodel", "gemini-3-flash-preview").orEmpty()
-
+        val langName = langs[spLang.selectedItemPosition.coerceIn(0, langs.size - 1)].second
         val movieMs = videoDurationMs(uri)
-        val minutes = if (movieMs > 0) (movieMs / 60000.0).roundToInt().coerceIn(1, 20) else 5
 
         ensureModel()
 
         // 1) Audio
-        setStatus("၁/၅ အသံထုတ်နေပါတယ်...")
+        setStatus("၁/၆ အသံထုတ်နေပါတယ်...")
         updateProgress(0)
         val wav = File(cacheDir, "audio_16k.wav")
         withContext(Dispatchers.IO) {
@@ -864,7 +863,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         // 2) Vosk
-        setStatus("၂/၅ စကားပြောကို စာသားပြောင်းနေပါတယ်...")
+        setStatus("၂/၆ စကားပြောကို စာသားပြောင်းနေပါတယ်...")
         updateProgress(0)
         val transcript = withContext(Dispatchers.Default) {
             VoskTranscriber.transcribe(modelDir, wav) { updateProgress(it) }
@@ -873,64 +872,109 @@ class MainActivity : AppCompatActivity() {
         if (transcript.isBlank()) error("စကားပြောစာသား မရပါ။ ဘာသာစကား ကိုက်မကိုက် စစ်ပါ")
         File(filesDir, "transcript.txt").writeText(transcript)
 
-        // 3) Gemini
-        setStatus("၃/၅ Gemini က မြန်မာ script ရေးနေပါတယ်...")
-        updateProgress(0)
-        val clipped = if (transcript.length > 300_000) transcript.take(300_000) else transcript
-        val segs = GeminiClient.writeScript(key, gModel, buildPrompt(minutes, clipped)) { setStatus(it) }
-        val scriptText = segs.joinToString("\n\n") { it.text }
-        File(filesDir, "script.txt").writeText(scriptText)
-        runOnUiThread { tvScript.text = scriptText }
-
-        // 4) TTS (Bing / Gemini / Google → PCM 24kHz)
-        initEngine()
-        val pcmAll = ByteArrayOutputStream()
-        val durations = ArrayList<Long>()
-        for ((i, seg) in segs.withIndex()) {
-            setStatus("၄/၅ မြန်မာအသံထုတ်နေပါတယ် ${i + 1}/${segs.size} [${engineLabel()}]")
-            updateProgress((i * 100) / segs.size)
-            val pcm = synthSegmentPcm(seg.text)
-            durations += (pcm.size * 1000L / 48000L).coerceAtLeast(800L)
-            pcmAll.write(pcm)
+        // 3) စကားပြောခန်းတွေ ခွဲ
+        setStatus("၃/၆ စကားပြောခန်းတွေ ခွဲနေပါတယ်...")
+        val scenes0 = SceneSplitter.group(SceneSplitter.parse(transcript), movieMs / 1000.0)
+        if (scenes0.isEmpty()) error("စကားပြောခန်း မတွေ့ပါ")
+        val talkSec = scenes0.sumOf { it.endSec - it.startSec }
+        runOnUiThread {
+            tvScript.text = "စကားပြောခန်း ${scenes0.size} ခန်း (စုစုပေါင်း ${talkSec.roundToInt()} စက္ကန့်) တွေ့ပါတယ်..."
         }
-        val narration = File(cacheDir, "narration.wav")
-        VideoMerger.writeWav24k(narration, pcmAll.toByteArray())
 
-        // 5) Merge
-        setStatus("၅/၅ မူရင်း video ရဲ့ frame တွေကို စစ်ဆေးနေပါတယ်...")
+        // 4) ခန်းတစ်ခုချင်း ဘာသာပြန်
+        setStatus("၄/၆ Gemini က ခန်းတစ်ခုချင်း ဘာသာပြန်နေပါတယ် (${scenes0.size} ခန်း)...")
+        updateProgress(0)
+        val texts0 = GeminiClient.translateScenes(key, gModel, langName, scenes0, { updateProgress(it) }) { setStatus(it) }
+        val keep = scenes0.indices.filter { texts0[it].isNotBlank() }
+        if (keep.isEmpty()) error("Gemini က ဘာသာပြန်စာ မထုတ်ပေးပါ")
+        val scenes = keep.map { scenes0[it] }
+        val texts = keep.map { texts0[it].trim() }
+        File(filesDir, "script.txt").writeText(texts.joinToString("\n\n"))
+        runOnUiThread { tvScript.text = texts.mapIndexed { i, t -> "${i + 1}. $t" }.joinToString("\n\n") }
+
+        // 5) ခန်းတစ်ခုချင်း အသံထုတ်
+        initEngine()
+        val pcms = ArrayList<ByteArray>()
+        for ((i, t) in texts.withIndex()) {
+            setStatus("၅/၆ မြန်မာအသံ ${i + 1}/${texts.size} [${engineLabel()}]")
+            updateProgress((i * 100) / texts.size)
+            pcms.add(synthSegmentPcm(t))
+        }
+
+        // 6) ရုပ်နဲ့အသံ အတိအကျကိုက်အောင် ချိန်ညှိပြီး ပေါင်း
+        setStatus("၆/၆ မူရင်း video ရဲ့ frame တွေကို စစ်ဆေးနေပါတယ်...")
         updateProgress(0)
         val uniq = VideoMerger.sourceUniqueFps(this, uri, movieMs)
-        val smooth = prefs.getBoolean("smooth", false) || (uniq != null && uniq < 14.0)
-        val srcNote = if (uniq != null) "မူရင်း ပုံအသစ် ~${String.format(Locale.US, "%.1f", uniq)}/စက္ကန့်" else ""
-        setStatus("၅/၅ ဗီဒီယိုနဲ့ ပေါင်းနေပါတယ်${if (smooth) " (ချောမွေ့စေမယ်)" else ""} — $srcNote")
-        val clips = planClips(segs, durations, movieMs)
+        val smooth = prefs.getBoolean("smooth", false)
+        val srcNote = if (uniq != null) {
+            "မူရင်း ပုံအသစ် ~${String.format(Locale.US, "%.1f", uniq)}/စက္ကန့်" +
+                    (if (uniq < 8.0) " (မူရင်းကိုယ်တိုင် ထစ်တာ)" else "")
+        } else ""
+        setStatus("၆/၆ ရုပ်နဲ့အသံ ချိန်ညှိပြီး ပေါင်းနေပါတယ် — $srcNote")
+        val (clips, narrationPcm) = planScenes(scenes, pcms, movieMs)
+        val narration = File(cacheDir, "narration.wav")
+        VideoMerger.writeWav24k(narration, narrationPcm)
         val out = File(cacheDir, "recap_out.mp4")
         out.delete()
         VideoMerger.merge(this, uri, narration, clips, out, smooth) { updateProgress(it) }
 
         val where = withContext(Dispatchers.IO) { saveToMovies(out) }
         updateProgress(100)
-        setStatus("✅ ပြီးပါပြီ — $where  [${VideoMerger.lastEncoder} · ${engineLabel()}${if (smooth) " · blend" else ""}] $srcNote")
+        val mins = clips.sumOf { it.frames } / 30 / 60.0
+        setStatus(
+            "✅ ပြီးပါပြီ — $where  [${clips.size} ခန်း · ${String.format(Locale.US, "%.1f", mins)} မိနစ် · " +
+                    "${VideoMerger.lastEncoder} · ${engineLabel()}] $srcNote"
+        )
         if (outUri != null) runOnUiThread { btnOpen.visibility = View.VISIBLE }
     }
 
-    private fun buildPrompt(minutes: Int, transcript: String): String = """
-You are a professional Burmese movie-recap narrator.
+    /**
+     * ခန်းတစ်ခုချင်းအတွက် (ရုပ်ကြာချိန် R, အသံကြာချိန် D) ကို frame အတိအကျ ကိုက်အောင် ချိန်ညှိတယ်။
+     * - အသံက ခန်းထက်ရှည်ရင်: ခန်းနောက်က footage ကို ထပ်ယူပြီး နှေး (အနှေးဆုံး ၀.၇၅ ဆ)၊ မလောက်ရင် နောက်ဆုံးပုံကို ထိန်း
+     * - ခန်းက အသံထက်ရှည်ရင်: video ကို မြန် (အမြန်ဆုံး ၂.၅ ဆ)၊ ကျန်ရင် အသံကို တိတ်ဆိတ်ဖြည့်
+     * ထွက်လာတဲ့ ရုပ် frame အရေအတွက်နဲ့ အသံ sample အရေအတွက် အတိအကျ တူတယ် (၁ frame = ၈၀၀ sample)
+     */
+    private fun planScenes(
+        scenes: List<SceneSplitter.Scene>,
+        pcms: List<ByteArray>,
+        movieMs: Long
+    ): Pair<List<VideoMerger.Clip>, ByteArray> {
+        val minSp = 0.75
+        val maxSp = 2.5
+        val fps = 30
+        val clips = ArrayList<VideoMerger.Clip>()
+        val pcmOut = ByteArrayOutputStream()
+        val movieSec = if (movieMs > 0) movieMs / 1000.0 else scenes.last().endSec + 30.0
 
-Below is the dialogue transcript of a movie/video with timestamps in seconds, formatted as [start-end] text.
-The dialogue may be in English or another language and may contain speech-recognition errors. Infer the story from context.
+        for ((i, sc) in scenes.withIndex()) {
+            val pcm = pcms[i]
+            val d = (pcm.size / 48000.0).coerceAtLeast(0.5)
+            val nextStart = if (i + 1 < scenes.size) scenes[i + 1].startSec else movieSec
+            val maxExt = (nextStart - sc.startSec).coerceAtLeast(0.5)
+            val r = (sc.endSec - sc.startSec).coerceAtLeast(0.5)
 
-Task: Write a recap narration of the whole video in natural spoken Burmese (မြန်မာဘာသာ), in the style of popular movie-recap YouTube channels. Tone: exciting and engaging.
-Rules:
-- Total length: about $minutes minutes when read aloud (about ${minutes * 550} Burmese characters).
-- Split the narration into about ${(minutes * 5).coerceIn(10, 80)} short consecutive segments in story order. Each segment is 1-2 sentences (roughly 8-15 seconds when read aloud) and covers ONE specific scene or moment.
-- For each segment, give the start and end time in seconds (decimals allowed) of that exact scene in the video, using the transcript timestamps. Ranges must be accurate, in increasing order, and must not overlap. The range length should be roughly similar to the time needed to read the segment aloud.
-- Plain spoken Burmese only. No bullet points, no markdown, no emojis, no English except character names.
-Output ONLY a JSON array like: [{"text":"...","start":123.4,"end":170.0}]
+            var srcLen = r
+            if (r < d * minSp) srcLen = minOf(d * 0.9, maxExt).coerceAtLeast(r)
+            val speed = (srcLen / d).coerceIn(minSp, maxSp).let { if (it in 0.95..1.05) 1.0 else it }
+            val v = srcLen / speed
+            val total = maxOf(d, v)
+            val n = Math.ceil(total * fps).toInt().coerceAtLeast(1)
 
-Transcript:
-$transcript
-""".trimIndent()
+            clips.add(
+                VideoMerger.Clip(
+                    (sc.startSec * 1000).toLong(),
+                    ((sc.startSec + srcLen) * 1000).toLong(),
+                    speed.toFloat(),
+                    n
+                )
+            )
+
+            val target = n * 1600
+            pcmOut.write(pcm, 0, minOf(pcm.size, target))
+            if (pcm.size < target) pcmOut.write(ByteArray(target - pcm.size))
+        }
+        return clips to pcmOut.toByteArray()
+    }
 
     private fun chunkText(text: String, max: Int): List<String> {
         val parts = text.split(Regex("(?<=[။.!?])")).map { it.trim() }.filter { it.isNotEmpty() }
@@ -949,44 +993,6 @@ $transcript
             }
         }
         if (cur.isNotEmpty()) out.add(cur.toString())
-        return out
-    }
-
-    /**
-     * Script တစ်ပိုင်းစီအတွက် scene ကို ဖြတ်ပြီး အမြန်နှုန်း ချိန်ညှိတယ်။
-     * - narration က scene ထက်ရှည်ရင် နှေးတယ် (အများဆုံး ၀.၈ ဆ)၊ ဒီထက်ပိုလိုရင် scene ပတ်ဝန်းကျင် footage ကို ထပ်ယူတယ်
-     * - scene က narration ထက်ရှည်ရင် မြန်တယ် (အများဆုံး ၂ ဆ)
-     * - ထွက်လာမယ့် ကြာချိန် = narration ကြာချိန် အတိအကျ
-     */
-    private fun planClips(
-        segs: List<GeminiClient.Seg>,
-        durs: List<Long>,
-        movieMs: Long
-    ): List<VideoMerger.Clip> {
-        val out = ArrayList<VideoMerger.Clip>()
-        for ((i, s) in segs.withIndex()) {
-            val d = durs[i]
-            var sMs = (s.start * 1000).toLong()
-            var eMs = (s.end * 1000).toLong()
-            val valid = s.start >= 0 && s.end > s.start && (movieMs <= 0 || sMs < movieMs)
-            if (!valid) {
-                sMs = if (movieMs > 0) movieMs * i / segs.size else 0L
-                eMs = sMs + d
-            }
-            if (movieMs > 0) eMs = eMs.coerceAtMost(movieMs)
-            val range = (eMs - sMs).coerceAtLeast(500L)
-
-            var speed = (range.toDouble() / d).coerceIn(0.8, 2.0)
-            if (speed in 0.95..1.05) speed = 1.0
-            val srcLen = (d * speed).toLong()
-
-            // scene ထက် ပိုယူရရင် ရှေ့ ၂၅% / နောက် ၇၅% ကို ချဲ့၊ scene ထက်နည်းရင် အလယ်ကိုယူ
-            var st = if (srcLen > range) sMs - ((srcLen - range) * 0.25).toLong()
-            else sMs + (range - srcLen) / 2
-            st = st.coerceAtLeast(0L)
-            if (movieMs > 0 && st + srcLen > movieMs) st = (movieMs - srcLen).coerceAtLeast(0L)
-            out.add(VideoMerger.Clip(st, st + srcLen, speed.toFloat()))
-        }
         return out
     }
 
