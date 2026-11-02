@@ -5,17 +5,18 @@ object SceneSplitter {
 
     data class Utt(val start: Double, val end: Double, val text: String)
     data class Scene(val startSec: Double, val endSec: Double, val text: String)
+    data class Line(val start: Double, val end: Double, val text: String, val dub: Boolean)
 
     private val LINE = Regex("^\\[(\\d+(?:\\.\\d+)?)-(\\d+(?:\\.\\d+)?)]\\s*(.*)$")
 
-    fun parse(transcript: String): List<Utt> {
+    fun parse(transcript: String, offsetSec: Double = 0.0): List<Utt> {
         val out = ArrayList<Utt>()
         for (line in transcript.lineSequence()) {
             val m = LINE.find(line.trim()) ?: continue
             val s = m.groupValues[1].toDoubleOrNull() ?: continue
             val e = m.groupValues[2].toDoubleOrNull() ?: continue
             val t = m.groupValues[3].trim()
-            if (t.isNotEmpty() && e > s) out.add(Utt(s, e, t))
+            if (t.isNotEmpty() && e > s) out.add(Utt(s + offsetSec, e + offsetSec, t))
         }
         return out
     }
@@ -70,5 +71,49 @@ object SceneSplitter {
             if (e - s >= 0.8) scenes.add(Scene(s, e, r.sb.toString()))
         }
         return scenes
+    }
+
+    private val FILLERS = setOf("嗯", "啊", "哦", "呃", "唉", "哎", "呵", "哈", "喂", "um", "uh", "ah", "oh", "hm", "hmm", "mm")
+
+    /**
+     * Dub mode အတွက် စကားတစ်ကြောင်းချင်း (အချိန်တိကျ) ခွဲတယ်။
+     * - စကားကြား ၀.၃၅ စက္ကန့်အောက်၊ ပေါင်းရင် ၈ စက္ကန့်အောက်ဆို ပေါင်း
+     * - "嗯/啊" လို အသံတိုလေးတွေ (dub=false) က ဘာသာမပြန်၊ အသံမထုတ်
+     * - ရှေ့ ၀.၁၂ / နောက် ၀.၂၀ စက္ကန့် ချဲ့ (ကပ်လျက်စကားနဲ့ မထပ်စေဘဲ)
+     */
+    fun lines(utts: List<Utt>, rangeStart: Double, rangeEnd: Double): List<Line> {
+        val inRange = utts.filter { it.end > rangeStart && it.start < rangeEnd }
+        if (inRange.isEmpty()) return emptyList()
+        data class Raw(var s: Double, var e: Double, val sb: StringBuilder)
+
+        val raws = ArrayList<Raw>()
+        var cur: Raw? = null
+        for (u in inRange) {
+            val c = cur
+            if (c == null) {
+                cur = Raw(u.start, u.end, StringBuilder(u.text))
+            } else if (u.start - c.e < 0.35 && u.end - c.s < 8.0) {
+                c.e = u.end
+                c.sb.append(' ').append(u.text)
+            } else {
+                raws.add(c)
+                cur = Raw(u.start, u.end, StringBuilder(u.text))
+            }
+        }
+        cur?.let { raws.add(it) }
+
+        val out = ArrayList<Line>()
+        for ((idx, r) in raws.withIndex()) {
+            val prevEnd = if (idx > 0) raws[idx - 1].e else rangeStart
+            val nextStart = if (idx + 1 < raws.size) raws[idx + 1].s else rangeEnd
+            val s = maxOf(r.s - 0.12, (prevEnd + r.s) / 2.0, rangeStart)
+            val e = minOf(r.e + 0.20, (nextStart + r.e) / 2.0, rangeEnd)
+            if (e - s < 0.4) continue
+            val text = r.sb.toString().trim()
+            val core = text.filter { it.isLetterOrDigit() }
+            val dub = core.length >= 2 && core.lowercase() !in FILLERS
+            out.add(Line(s, e, text, dub))
+        }
+        return out
     }
 }
