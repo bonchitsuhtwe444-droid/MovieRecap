@@ -143,6 +143,12 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var etApiKey: EditText
     private lateinit var tvEye: TextView
+    private lateinit var btnModeRecap: Button
+    private lateinit var btnModeDub: Button
+    private lateinit var etFrom: EditText
+    private lateinit var etTo: EditText
+    private lateinit var tvRange: TextView
+    private var dubMode = false
     private var keyHidden = false
     private lateinit var spLang: Spinner
     private lateinit var spVoice: Spinner
@@ -417,6 +423,38 @@ class MainActivity : AppCompatActivity() {
         c4.addView(tvVideo, lp(0, WRAP, 1f, l = 10))
         body.addView(c4, lp(MATCH, WRAP, t = 8))
 
+        // mode + range
+        val c6 = card()
+        val modeRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        btnModeRecap = styledButton("📖  Recap", false)
+        btnModeDub = styledButton("🎭  Dub", false)
+        modeRow.addView(btnModeRecap, lp(0, dp(40), 1f, r = 4))
+        modeRow.addView(btnModeDub, lp(0, dp(40), 1f, l = 4))
+        c6.addView(modeRow)
+        val rangeRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        tvRange = label("⏱  Dub ပိုင်း (မိနစ်) — အလွတ်ထားရင် တစ်ခုလုံး")
+        fun numField(h: String) = EditText(this).apply {
+            hint = h
+            inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
+            setSingleLine()
+            textSize = 13f
+            gravity = Gravity.CENTER
+            setTextColor(C_TEXT)
+            setHintTextColor(Color.parseColor("#9A9EAA"))
+            background = rounded(C_INPUT, dp(10), dp(1), C_STROKE)
+            setPadding(dp(6), 0, dp(6), 0)
+        }
+        etFrom = numField("စ")
+        etTo = numField("ပြီး")
+        rangeRow.addView(tvRange, lp(0, WRAP, 1f))
+        rangeRow.addView(etFrom, lp(dp(56), dp(36), l = 6))
+        rangeRow.addView(etTo, lp(dp(56), dp(36), l = 6))
+        c6.addView(rangeRow, lp(MATCH, WRAP, t = 6))
+        body.addView(c6, lp(MATCH, WRAP, t = 8))
+
         // generate
         val rowG = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         btnGenerate = styledButton("▶  Recap ဖန်တီးမယ်", true).apply {
@@ -499,6 +537,12 @@ class MainActivity : AppCompatActivity() {
         sbSpeed.progress = prefs.getInt("speed", 50)
         sbPitch.progress = prefs.getInt("pitch", 50)
         updateVoiceLabels()
+        dubMode = prefs.getBoolean("dub", false)
+        etFrom.setText(prefs.getString("from", ""))
+        etTo.setText(prefs.getString("to", ""))
+        btnModeRecap.setOnClickListener { dubMode = false; updateModeButtons() }
+        btnModeDub.setOnClickListener { dubMode = true; updateModeButtons() }
+        updateModeButtons()
 
         val l = object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(s: SeekBar?, p: Int, fromUser: Boolean) = updateVoiceLabels()
@@ -527,6 +571,20 @@ class MainActivity : AppCompatActivity() {
         player?.release()
         player = null
         super.onDestroy()
+    }
+
+    private fun updateModeButtons() {
+        fun style(b: Button, sel: Boolean) {
+            b.background = if (sel) gradH(C_ACCENT, C_PINK, dp(14))
+            else grad(Color.WHITE, Color.parseColor("#F1EAFF"), dp(14), dp(1), Color.parseColor("#CDBFFF"))
+            b.setTextColor(if (sel) Color.WHITE else C_ACCENT)
+        }
+        style(btnModeRecap, !dubMode)
+        style(btnModeDub, dubMode)
+        etFrom.isEnabled = dubMode && !busy
+        etTo.isEnabled = dubMode && !busy
+        tvRange.alpha = if (dubMode) 1f else 0.4f
+        btnGenerate.text = if (dubMode) "▶  Dub ဖန်တီးမယ်" else "▶  Recap ဖန်တီးမယ်"
     }
 
     private fun applyKeyVisibility() {
@@ -561,6 +619,9 @@ class MainActivity : AppCompatActivity() {
             .putInt("voice", spVoice.selectedItemPosition)
             .putInt("speed", sbSpeed.progress)
             .putInt("pitch", sbPitch.progress)
+            .putBoolean("dub", dubMode)
+            .putString("from", etFrom.text.toString().trim())
+            .putString("to", etTo.text.toString().trim())
             .apply()
     }
 
@@ -593,6 +654,18 @@ class MainActivity : AppCompatActivity() {
             textSize = 13f
         }
         box.addView(cbSmooth)
+        val cbDrop = CheckBox(this).apply {
+            text = "Dub: စကားမပြောတဲ့ အပိုင်းတွေကို ဖယ်မယ် (စကားပြောခန်းပဲ ထားမယ်)"
+            isChecked = prefs.getBoolean("dropgaps", false)
+            textSize = 13f
+        }
+        box.addView(cbDrop)
+        val cbFree = CheckBox(this).apply {
+            text = "Dub: Gemini မသုံးဘဲ Google Translate နဲ့ပဲ ဘာသာပြန် (quota မကုန်၊ အရည်အသွေး နိမ့်)"
+            isChecked = prefs.getBoolean("freetrans", false)
+            textSize = 13f
+        }
+        box.addView(cbFree)
         AlertDialog.Builder(this)
             .setTitle("Advanced")
             .setView(box)
@@ -602,6 +675,8 @@ class MainActivity : AppCompatActivity() {
                     .putString("ttsmodel", etTm.text.toString().trim())
                     .putString("ttsvoice", etTv.text.toString().trim())
                     .putBoolean("smooth", cbSmooth.isChecked)
+                    .putBoolean("dropgaps", cbDrop.isChecked)
+                    .putBoolean("freetrans", cbFree.isChecked)
                     .apply()
             }
             .setNegativeButton("မလုပ်တော့ဘူး", null)
@@ -649,8 +724,9 @@ class MainActivity : AppCompatActivity() {
 
     private fun setBusy(b: Boolean) {
         busy = b
-        listOf<View>(btnVideo, btnPreview, spLang, spVoice, sbSpeed, sbPitch, btnSettings, etApiKey)
+        listOf<View>(btnVideo, btnPreview, spLang, spVoice, sbSpeed, sbPitch, btnSettings, etApiKey, btnModeRecap, btnModeDub)
             .forEach { it.isEnabled = !b }
+        updateModeButtons()
         progress.visibility = if (b) View.VISIBLE else View.INVISIBLE
         if (b) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -816,7 +892,7 @@ class MainActivity : AppCompatActivity() {
         setBusy(true)
         lifecycleScope.launch {
             try {
-                runPipeline(key, uri)
+                if (dubMode) runDubPipeline(key, uri) else runPipeline(key, uri)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {
@@ -973,6 +1049,152 @@ class MainActivity : AppCompatActivity() {
             pcmOut.write(pcm, 0, minOf(pcm.size, target))
             if (pcm.size < target) pcmOut.write(ByteArray(target - pcm.size))
         }
+        return clips to pcmOut.toByteArray()
+    }
+
+    // ======================================================== DUB MODE
+    private suspend fun runDubPipeline(key: String, uri: Uri) {
+        val gModel = prefs.getString("gmodel", "gemini-3-flash-preview").orEmpty()
+        val (langCode, langName, _) = langs[spLang.selectedItemPosition.coerceIn(0, langs.size - 1)]
+        val sl = if (langCode == "cn") "zh-CN" else langCode
+        val movieMs = videoDurationMs(uri)
+        val movieSec = if (movieMs > 0) movieMs / 1000.0 else 0.0
+        val fromSec = ((etFrom.text.toString().toDoubleOrNull() ?: 0.0) * 60.0).coerceAtLeast(0.0)
+        var toSec = (etTo.text.toString().toDoubleOrNull() ?: 0.0) * 60.0
+        if (toSec <= fromSec) toSec = if (movieSec > 0) movieSec else fromSec + 3600.0
+        if (movieSec > 0) toSec = minOf(toSec, movieSec)
+        if (toSec - fromSec < 2.0) error("Dub လုပ်မယ့် ပိုင်း (စ/ပြီး) ကို မှန်မှန်ရွေးပါ")
+        val keepGaps = !prefs.getBoolean("dropgaps", false)
+        val freeOnly = prefs.getBoolean("freetrans", false)
+
+        ensureModel()
+
+        // 1) Audio (ရွေးထားတဲ့ ပိုင်းပဲ)
+        setStatus("၁/၆ အသံထုတ်နေပါတယ်...")
+        updateProgress(0)
+        val wav = File(cacheDir, "audio_16k.wav")
+        withContext(Dispatchers.IO) {
+            AudioExtractor.extractToWav(this@MainActivity, uri, wav, fromSec, toSec) { updateProgress(it) }
+        }
+
+        // 2) Vosk
+        setStatus("၂/၆ စကားပြောကို စာသားပြောင်းနေပါတယ်...")
+        updateProgress(0)
+        val transcript = withContext(Dispatchers.Default) {
+            VoskTranscriber.transcribe(modelDir, wav) { updateProgress(it) }
+        }
+        wav.delete()
+        if (transcript.isBlank()) error("စကားပြောစာသား မရပါ။ ဘာသာစကား ကိုက်မကိုက် စစ်ပါ")
+        File(filesDir, "transcript.txt").writeText(transcript)
+
+        // 3) စကားတစ်ကြောင်းချင်း ခွဲ
+        setStatus("၃/၆ စကားတစ်ကြောင်းချင်း ခွဲနေပါတယ်...")
+        val allLines = SceneSplitter.lines(SceneSplitter.parse(transcript, fromSec), fromSec, toSec)
+        val dubLines = allLines.filter { it.dub }
+        if (dubLines.isEmpty()) error("Dub လုပ်စရာ စကားပြောကြောင်း မတွေ့ပါ")
+        runOnUiThread { tvScript.text = "စကားပြောကြောင်း ${dubLines.size} ကြောင်း တွေ့ပါတယ်..." }
+
+        // 4) ဘာသာပြန်
+        setStatus("၄/၆ ဘာသာပြန်နေပါတယ် (${dubLines.size} ကြောင်း)...")
+        updateProgress(0)
+        val items = dubLines.mapIndexed { i, l -> Translator.Item(i, l.end - l.start, l.text) }
+        val texts0 = Translator.translate(
+            File(filesDir, "trans_cache.json"), key, gModel, langName, langCode, sl, items, freeOnly,
+            { updateProgress(it) }
+        ) { setStatus(it) }
+        val keep = dubLines.indices.filter { texts0[it].isNotBlank() }
+        if (keep.isEmpty()) error("ဘာသာပြန်စာ မရပါ (Gemini/Google Translate နှစ်ခုလုံး မရ)")
+        val lines = keep.map { dubLines[it] }
+        val texts = keep.map { texts0[it].trim() }
+        File(filesDir, "script.txt").writeText(texts.joinToString("\n"))
+        runOnUiThread {
+            tvScript.text = lines.indices.joinToString("\n\n") { i ->
+                val t = lines[i].start.roundToInt()
+                String.format(Locale.US, "[%02d:%02d] ", t / 60, t % 60) + texts[i]
+            }
+        }
+
+        // 5) အသံ (တစ်ကြောင်းချင်း၊ မြန်မာအသံတစ်မျိုးတည်း)
+        initEngine()
+        val pcms = ArrayList<ByteArray>()
+        for ((i, t) in texts.withIndex()) {
+            setStatus("၅/၆ မြန်မာအသံ ${i + 1}/${texts.size} [${engineLabel()}]")
+            updateProgress((i * 100) / texts.size)
+            pcms.add(synthSegmentPcm(t))
+        }
+
+        // 6) ရုပ်နဲ့အသံ frame အတိအကျ ညှိပြီး ပေါင်း
+        setStatus("၆/၆ ရုပ်နဲ့အသံ ချိန်ညှိပြီး ပေါင်းနေပါတယ်...")
+        updateProgress(0)
+        val (clips, narrationPcm) = planDub(lines, pcms, fromSec, toSec, keepGaps)
+        val narration = File(cacheDir, "narration.wav")
+        VideoMerger.writeWav24k(narration, narrationPcm)
+        val out = File(cacheDir, "recap_out.mp4")
+        out.delete()
+        VideoMerger.merge(this, uri, narration, clips, out, prefs.getBoolean("smooth", false)) { updateProgress(it) }
+
+        val where = withContext(Dispatchers.IO) { saveToMovies(out) }
+        updateProgress(100)
+        val mins = clips.sumOf { it.frames } / 30 / 60.0
+        setStatus(
+            "✅ Dub ပြီးပါပြီ — $where  [${lines.size} ကြောင်း · ${String.format(Locale.US, "%.1f", mins)} မိနစ် · " +
+                    "${VideoMerger.lastEncoder} · ${engineLabel()}]"
+        )
+        if (outUri != null) runOnUiThread { btnOpen.visibility = View.VISIBLE }
+    }
+
+    /**
+     * စကားတစ်ကြောင်းချင်းအတွက် ရုပ်ကြာချိန် R နဲ့ မြန်မာအသံကြာချိန် D ကို အတိအကျ ညှိတယ်:
+     * - အသံရှည်ရင် ရုပ်ကို နှေး (အနှေးဆုံး ၀.၃ ဆ၊ ဒီထက်ပိုရင် နောက်ဆုံးပုံကို ထိန်း)
+     * - ရုပ်ရှည်ရင် ရုပ်ကို မြန် (အမြန်ဆုံး ၂.၅ ဆ)၊ ဒီထက်ပိုနေတဲ့ အပိုင်းကို ဖြတ်ထုတ်
+     * - ရုပ် frame အရေအတွက်နဲ့ အသံ sample အရေအတွက် အတိအကျတူ (၁ frame = ၈၀၀ sample)
+     * စကားမပြောတဲ့ကြားအပိုင်းတွေက မူရင်းအတိုင်း (အသံတိတ်) ဆက်ထားတယ်
+     */
+    private fun planDub(
+        lines: List<SceneSplitter.Line>,
+        pcms: List<ByteArray>,
+        fromSec: Double,
+        toSec: Double,
+        keepGaps: Boolean
+    ): Pair<List<VideoMerger.Clip>, ByteArray> {
+        val minSp = 0.3
+        val maxSp = 2.5
+        val fps = 30
+        val clips = ArrayList<VideoMerger.Clip>()
+        val pcmOut = ByteArrayOutputStream()
+
+        fun gap(a: Double, b: Double) {
+            if (!keepGaps || b - a < 0.1) return
+            val n = Math.round((b - a) * fps).toInt().coerceAtLeast(1)
+            clips.add(VideoMerger.Clip((a * 1000).toLong(), (b * 1000).toLong(), 1f, n))
+            pcmOut.write(ByteArray(n * 1600))
+        }
+
+        var cursor = fromSec
+        for ((i, l) in lines.withIndex()) {
+            gap(cursor, l.start)
+            val pcm = pcms[i]
+            val d = (pcm.size / 48000.0).coerceAtLeast(0.4)
+            val r = (l.end - l.start).coerceAtLeast(0.4)
+            val sp0 = r / d
+            var speed = sp0.coerceIn(minSp, maxSp)
+            if (speed in 0.95..1.05) speed = 1.0
+            val srcLen = if (sp0 > maxSp) d * maxSp else r
+            val n = Math.ceil(d * fps).toInt().coerceAtLeast(1)
+            clips.add(
+                VideoMerger.Clip(
+                    (l.start * 1000).toLong(),
+                    ((l.start + srcLen) * 1000).toLong(),
+                    speed.toFloat(),
+                    n
+                )
+            )
+            val target = n * 1600
+            pcmOut.write(pcm, 0, minOf(pcm.size, target))
+            if (pcm.size < target) pcmOut.write(ByteArray(target - pcm.size))
+            cursor = l.end
+        }
+        gap(cursor, toSec)
         return clips to pcmOut.toByteArray()
     }
 
