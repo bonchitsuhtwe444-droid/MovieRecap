@@ -18,6 +18,8 @@ object AudioExtractor {
         context: Context,
         videoUri: Uri,
         outFile: File,
+        startSec: Double = 0.0,
+        endSec: Double = -1.0,
         onProgress: (Int) -> Unit
     ) {
         val extractor = MediaExtractor()
@@ -39,6 +41,11 @@ object AudioExtractor {
         val mime = format.getString(MediaFormat.KEY_MIME)!!
         val durationUs = if (format.containsKey(MediaFormat.KEY_DURATION))
             format.getLong(MediaFormat.KEY_DURATION) else 0L
+        val startUs = (startSec * 1_000_000).toLong()
+        val endUs = if (endSec > 0) (endSec * 1_000_000).toLong() else Long.MAX_VALUE
+        if (startUs > 0) extractor.seekTo(startUs, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
+        val limitUs = if (durationUs > 0) minOf(durationUs, endUs) else endUs
+        val spanUs = if (limitUs == Long.MAX_VALUE) 0L else (limitUs - startUs).coerceAtLeast(1L)
 
         val codec = MediaCodec.createDecoderByType(mime)
         codec.configure(format, null, null, 0)
@@ -63,13 +70,14 @@ object AudioExtractor {
                 if (inIdx >= 0) {
                     val buf = codec.getInputBuffer(inIdx)!!
                     val size = extractor.readSampleData(buf, 0)
-                    if (size < 0) {
+                    val st = if (size >= 0) extractor.sampleTime else -1L
+                    if (size < 0 || st > endUs) {
                         codec.queueInputBuffer(inIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
                         inputDone = true
                     } else {
-                        codec.queueInputBuffer(inIdx, 0, size, extractor.sampleTime, 0)
-                        if (durationUs > 0) {
-                            onProgress(((extractor.sampleTime * 100) / durationUs).toInt().coerceIn(0, 99))
+                        codec.queueInputBuffer(inIdx, 0, size, st, 0)
+                        if (spanUs > 0) {
+                            onProgress((((st - startUs) * 100) / spanUs).toInt().coerceIn(0, 99))
                         }
                         extractor.advance()
                     }
