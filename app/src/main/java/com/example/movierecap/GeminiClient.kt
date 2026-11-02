@@ -106,7 +106,7 @@ object GeminiClient {
         throw IOException("Gemini အလုပ်မလုပ်ပါ: $lastErr")
     }
 
-    private fun parseIdTexts(raw: String): Map<Int, String> {
+    fun parseIdTexts(raw: String): Map<Int, String> {
         var t = raw.trim()
         if (t.startsWith("```")) {
             t = t.removePrefix("```json").removePrefix("```").removeSuffix("```").trim()
