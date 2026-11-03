@@ -96,7 +96,7 @@ object VoskTranscriber {
     private fun fmt(d: Double): String = String.format(Locale.US, "%.1f", d)
 
     /** 16kHz mono WAV → "[စတင်-ပြီး] စာသား" လိုင်းများ (စက္ကန့်၊ ဒသမ ၁ နေရာ) */
-    fun transcribe(modelDir: File, wav: File, onProgress: (Int) -> Unit): String {
+    fun transcribe(modelDir: File, wav: File, words: StringBuilder? = null, onProgress: (Int) -> Unit): String {
         LibVosk.setLogLevel(LogLevel.WARNINGS)
         val model = Model(modelDir.absolutePath)
         val rec = Recognizer(model, 16000.0f)
@@ -113,6 +113,14 @@ object VoskTranscriber {
             if (arr != null && arr.length() > 0) {
                 st = arr.getJSONObject(0).optDouble("start", fallbackStart)
                 en = arr.getJSONObject(arr.length() - 1).optDouble("end", fallbackEnd)
+                if (words != null) {
+                    for (k in 0 until arr.length()) {
+                        val w = arr.getJSONObject(k)
+                        val wt = w.optString("word").trim()
+                        if (wt.isEmpty()) continue
+                        words.append(String.format(Locale.US, "%.2f\t%.2f\t%s\n", w.optDouble("start"), w.optDouble("end"), wt))
+                    }
+                }
             }
             sb.append("[${fmt(st)}-${fmt(en)}] $t\n")
         }
