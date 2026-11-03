@@ -101,6 +101,30 @@ object VideoMerger {
         }
     }
 
+    /** scene (ရုပ်ရှင် shot) ပြောင်းတဲ့ အချိန်တွေကို ရှာတယ် (စက္ကန့်၊ မူရင်း video ရဲ့ အချိန်အတိုင်း) */
+    suspend fun detectCuts(context: Context, uri: Uri, fromSec: Double, toSec: Double): List<Double> =
+        withContext(Dispatchers.IO) {
+            try {
+                val saf = FFmpegKitConfig.getSafParameterForRead(context, uri)
+                val s = FFmpegKit.executeWithArguments(
+                    arrayOf(
+                        "-hide_banner", "-ss", f(fromSec), "-t", f(toSec - fromSec), "-i", saf,
+                        "-an", "-sn", "-dn",
+                        "-vf", "scale=160:-2,select='gt(scene,0.4)',showinfo",
+                        "-f", "null", "-"
+                    )
+                )
+                val log = s.allLogsAsString ?: ""
+                val raw = Regex("pts_time:\\s*([0-9.]+)").findAll(log)
+                    .map { it.groupValues[1].toDouble() + fromSec }.toList().sorted()
+                val out = ArrayList<Double>()
+                for (t in raw) if (out.isEmpty() || t - out.last() > 0.5) out.add(t)
+                out
+            } catch (e: Exception) {
+                emptyList()
+            }
+        }
+
     // ---------------------------------------------------------------- audio tools
     private fun audioFilter(speed: Double, semitones: Double): String {
         val needPitch = abs(semitones) > 0.05
