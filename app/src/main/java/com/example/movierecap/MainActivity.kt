@@ -6,6 +6,8 @@ import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.res.ColorStateList
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.LinearGradient
@@ -35,6 +37,7 @@ import android.widget.ArrayAdapter
 import android.widget.CheckBox
 import android.widget.Button
 import android.widget.EditText
+import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.ScrollView
@@ -54,6 +57,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.FileOutputStream
 import java.util.Locale
 import kotlin.math.roundToInt
 
@@ -201,6 +205,37 @@ class MainActivity : AppCompatActivity() {
             videoUri = uri
             tvVideo.text = fileName(uri)
             refreshButtons()
+        }
+    }
+
+    private val pickLogo = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri != null) {
+            lifecycleScope.launch {
+                val ok = withContext(Dispatchers.IO) {
+                    try {
+                        contentResolver.openInputStream(uri)!!.use { ins ->
+                            var bmp = BitmapFactory.decodeStream(ins) ?: return@withContext false
+                            val m = maxOf(bmp.width, bmp.height)
+                            if (m > 800) {
+                                val sc = 800f / m
+                                bmp = Bitmap.createScaledBitmap(bmp, (bmp.width * sc).toInt(), (bmp.height * sc).toInt(), true)
+                            }
+                            FileOutputStream(File(filesDir, "logo.png")).use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
+                        }
+                        true
+                    } catch (e: Exception) {
+                        false
+                    }
+                }
+                if (ok) {
+                    overlay.logo.on = true
+                    loadLogoBitmap()
+                    showTab(2)
+                    saveOverlay()
+                } else {
+                    Toast.makeText(this@MainActivity, "Logo ပုံ ဖတ်လို့မရပါ", Toast.LENGTH_SHORT).show()
+                }
+            }
         }
     }
 
@@ -474,33 +509,12 @@ class MainActivity : AppCompatActivity() {
         c6.addView(rangeRow, lp(MATCH, WRAP, t = 6))
         body.addView(c6, lp(MATCH, WRAP, t = 8))
 
-        // generate
-        val rowG = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        btnGenerate = styledButton("▶  Recap ဖန်တီးမယ်", true).apply {
+        // next
+        btnNext = styledButton("ဆက်သွားမယ်  ▶", true).apply {
             textSize = 16f
             isEnabled = false
         }
-        rowG.addView(btnGenerate, lp(0, dp(52), 1f))
-        btnOpen = styledButton("ဖွင့်မယ်", false).apply { visibility = View.GONE }
-        rowG.addView(btnOpen, lp(WRAP, dp(52), l = 8))
-        body.addView(rowG, lp(MATCH, WRAP, t = 12))
-
-        progress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
-            max = 100
-            progressTintList = ColorStateList.valueOf(C_ACCENT)
-            progressBackgroundTintList = ColorStateList.valueOf(Color.parseColor("#E4DBFF"))
-            visibility = View.INVISIBLE
-        }
-        body.addView(progress, lp(MATCH, dp(6), t = 10))
-
-        tvStatus = TextView(this).apply {
-            textSize = 12f
-            setTextColor(C_TEXT)
-            maxLines = 3
-            ellipsize = TextUtils.TruncateAt.END
-            minLines = 1
-        }
-        body.addView(tvStatus, lp(MATCH, WRAP, t = 4))
+        body.addView(btnNext, lp(MATCH, dp(52), t = 12))
 
         // script box
         val c5 = card()
@@ -542,12 +556,687 @@ class MainActivity : AppCompatActivity() {
         return root
     }
 
+    // ======================================================== PAGE 2: PREVIEW / EDITOR
+    private lateinit var page1: View
+    private lateinit var page2: View
+    private lateinit var btnNext: Button
+    private lateinit var btnBack: TextView
+    private lateinit var editor: EditorView
+    private lateinit var sbTime: SeekBar
+    private lateinit var tvTime: TextView
+    private lateinit var tabBtns: List<Button>
+    private lateinit var panels: List<View>
+    private var overlay = OverlayConfig.default()
+    private var curTab = 0
+    private var curCover = 0
+    private var previewUri: Uri? = null
+    private var syncing = false
+    private var refreshCover: () -> Unit = {}
+    private var refreshSub: () -> Unit = {}
+    private var refreshLogo: () -> Unit = {}
+
+    private val palette = intArrayOf(
+        Color.parseColor("#FFFFFF"), Color.parseColor("#FFE600"), Color.parseColor("#000000"),
+        Color.parseColor("#FF3B30"), Color.parseColor("#FF9500"), Color.parseColor("#34C759"),
+        Color.parseColor("#00E5FF"), Color.parseColor("#FF4DA6")
+    )
+
+    private fun saveOverlay() {
+        prefs.edit().putString("overlay", overlay.toJson()).apply()
+    }
+
+    private fun markSel(b: Button, sel: Boolean) {
+        b.background = if (sel) gradH(C_ACCENT, C_PINK, dp(12))
+        else grad(Color.WHITE, Color.parseColor("#F1EAFF"), dp(12), dp(1), Color.parseColor("#CDBFFF"))
+        b.setTextColor(if (sel) Color.WHITE else C_ACCENT)
+    }
+
+    private fun smallBtn(text: String): Button = styledButton(text, false).apply {
+        textSize = 12f
+        minHeight = 0
+        minimumHeight = 0
+        setPadding(dp(6), 0, dp(6), 0)
+    }
+
+    private fun newSwitch(): Switch {
+        val states = arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf())
+        return Switch(this).apply {
+            thumbTintList = ColorStateList(states, intArrayOf(C_ACCENT, Color.parseColor("#B8B2D6")))
+            trackTintList = ColorStateList(states, intArrayOf(Color.parseColor("#CDBFFF"), Color.parseColor("#E4E0F2")))
+        }
+    }
+
+    private fun smallLabel(t: String) = TextView(this).apply {
+        text = t
+        textSize = 11.5f
+        setTextColor(C_TEXT2)
+    }
+
+    private inner class Swatches(val colors: IntArray, val onPick: (Int) -> Unit) {
+        val row = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.HORIZONTAL }
+        private val views = ArrayList<View>()
+
+        init {
+            for (c in colors) {
+                val v = View(this@MainActivity)
+                v.setOnClickListener {
+                    onPick(c)
+                    select(c)
+                }
+                views.add(v)
+                row.addView(v, lp(dp(28), dp(28), r = 8))
+            }
+            select(colors[0])
+        }
+
+        fun select(c: Int) {
+            for ((i, v) in views.withIndex()) {
+                val on = colors[i] == c
+                v.background = GradientDrawable().apply {
+                    shape = GradientDrawable.OVAL
+                    setColor(colors[i])
+                    setStroke(dp(if (on) 3 else 1), if (on) C_ACCENT else Color.parseColor("#C9C2E6"))
+                }
+            }
+        }
+    }
+
+    private fun buildCoverPanel(): View {
+        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val chipRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val chips = listOf("ဘောင် ၁", "ဘောင် ၂", "ဘောင် ၃").map { smallBtn(it) }
+        for ((i, b) in chips.withIndex()) {
+            chipRow.addView(b, lp(0, dp(34), 1f, r = if (i < 2) 6 else 0))
+            b.setOnClickListener {
+                curCover = i
+                editor.selected = i
+                refreshCover()
+            }
+        }
+        val sw = newSwitch()
+        chipRow.addView(sw, lp(WRAP, WRAP, l = 10))
+        col.addView(chipRow)
+
+        val modeRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val bSolid = smallBtn("အရောင်ဖြည့်")
+        val bBlur = smallBtn("ဝါး (blur)")
+        modeRow.addView(bSolid, lp(0, dp(34), 1f, r = 6))
+        modeRow.addView(bBlur, lp(0, dp(34), 1f))
+        col.addView(modeRow, lp(MATCH, WRAP, t = 6))
+
+        val sws = Swatches(palette) { color ->
+            overlay.covers[curCover].color = color
+            editor.invalidate()
+            saveOverlay()
+        }
+        col.addView(sws.row, lp(MATCH, WRAP, t = 6))
+
+        val tv = smallLabel("")
+        val sb = SeekBar(this).apply {
+            progressTintList = ColorStateList.valueOf(C_ACCENT)
+            thumbTintList = ColorStateList.valueOf(C_PINK)
+        }
+        col.addView(tv, lp(MATCH, WRAP, t = 4))
+        col.addView(sb, lp(MATCH, WRAP))
+
+        refreshCover = {
+            syncing = true
+            val c = overlay.covers[curCover]
+            for ((i, b) in chips.withIndex()) markSel(b, i == curCover)
+            sw.isChecked = c.on
+            markSel(bSolid, c.mode == 1)
+            markSel(bBlur, c.mode == 2)
+            sws.select(c.color)
+            sws.row.visibility = if (c.mode == 1) View.VISIBLE else View.GONE
+            if (c.mode == 1) {
+                sb.max = 80
+                sb.progress = ((c.alpha * 100).toInt() - 20).coerceIn(0, 80)
+                tv.text = "ပွင့်လင်းမြင်ရမှု ${(c.alpha * 100).toInt()}%"
+            } else {
+                sb.max = 39
+                sb.progress = (c.blur - 1).coerceIn(0, 39)
+                tv.text = "ဝါးအား ${c.blur}"
+            }
+            syncing = false
+        }
+        sw.setOnCheckedChangeListener { _, checked ->
+            if (syncing) return@setOnCheckedChangeListener
+            overlay.covers[curCover].on = checked
+            editor.selected = curCover
+            editor.invalidate()
+            saveOverlay()
+        }
+        bSolid.setOnClickListener {
+            overlay.covers[curCover].mode = 1
+            refreshCover()
+            editor.invalidate()
+            saveOverlay()
+        }
+        bBlur.setOnClickListener {
+            overlay.covers[curCover].mode = 2
+            refreshCover()
+            editor.invalidate()
+            saveOverlay()
+        }
+        sb.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(s: SeekBar?, p: Int, fromUser: Boolean) {
+                if (syncing || !fromUser) return
+                val c = overlay.covers[curCover]
+                if (c.mode == 1) {
+                    c.alpha = (p + 20) / 100f
+                    tv.text = "ပွင့်လင်းမြင်ရမှု ${p + 20}%"
+                } else {
+                    c.blur = p + 1
+                    tv.text = "ဝါးအား ${p + 1}"
+                }
+                editor.invalidate()
+            }
+
+            override fun onStartTrackingTouch(s: SeekBar?) {}
+            override fun onStopTrackingTouch(s: SeekBar?) = saveOverlay()
+        })
+        return col
+    }
+
+    private fun buildSubPanel(): View {
+        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val head = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        head.addView(TextView(this).apply {
+            text = "📝  မြန်မာစာတန်း ထည့်မယ်"
+            textSize = 13.5f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(C_TEXT)
+        }, lp(0, WRAP, 1f))
+        val sw = newSwitch()
+        head.addView(sw, lp(WRAP, WRAP))
+        col.addView(head)
+
+        col.addView(smallLabel("စာအရောင်"), lp(MATCH, WRAP, t = 4))
+        val textSw = Swatches(palette) { color ->
+            overlay.sub.textColor = color
+            editor.invalidate()
+            saveOverlay()
+        }
+        col.addView(textSw.row, lp(MATCH, WRAP, t = 3))
+
+        col.addView(smallLabel("နောက်ခံ"), lp(MATCH, WRAP, t = 6))
+        val bgRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val bgNames = listOf("မရှိ", "အမည်း", "အမည်းပါး", "အဖြူ", "အဖြူပါး")
+        val bgBtns = bgNames.map { smallBtn(it) }
+        for ((i, b) in bgBtns.withIndex()) {
+            bgRow.addView(b, lp(0, dp(32), 1f, r = if (i < 4) 4 else 0))
+            b.setOnClickListener {
+                overlay.sub.bgMode = i
+                refreshSub()
+                editor.invalidate()
+                saveOverlay()
+            }
+        }
+        col.addView(bgRow, lp(MATCH, WRAP, t = 3))
+
+        val outRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        outRow.addView(smallLabel("စာလုံးအနားသတ်"), lp(0, WRAP, 1f))
+        val swOut = newSwitch()
+        outRow.addView(swOut, lp(WRAP, WRAP))
+        col.addView(outRow, lp(MATCH, WRAP, t = 4))
+
+        val tvSize = smallLabel("")
+        val sbSize = SeekBar(this).apply {
+            max = 55
+            progressTintList = ColorStateList.valueOf(C_ACCENT)
+            thumbTintList = ColorStateList.valueOf(C_PINK)
+        }
+        col.addView(tvSize, lp(MATCH, WRAP, t = 2))
+        col.addView(sbSize, lp(MATCH, WRAP))
+
+        refreshSub = {
+            syncing = true
+            val s = overlay.sub
+            sw.isChecked = s.on
+            textSw.select(s.textColor)
+            for ((i, b) in bgBtns.withIndex()) markSel(b, i == s.bgMode)
+            swOut.isChecked = s.outline
+            sbSize.progress = ((s.size * 1000).toInt() - 15).coerceIn(0, 55)
+            tvSize.text = "စာလုံးအရွယ် ${(s.size * 1000).toInt()}"
+            syncing = false
+        }
+        sw.setOnCheckedChangeListener { _, checked ->
+            if (syncing) return@setOnCheckedChangeListener
+            overlay.sub.on = checked
+            editor.selected = 3
+            editor.invalidate()
+            saveOverlay()
+        }
+        swOut.setOnCheckedChangeListener { _, checked ->
+            if (syncing) return@setOnCheckedChangeListener
+            overlay.sub.outline = checked
+            editor.invalidate()
+            saveOverlay()
+        }
+        sbSize.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(s: SeekBar?, p: Int, fromUser: Boolean) {
+                if (syncing || !fromUser) return
+                overlay.sub.size = (p + 15) / 1000f
+                tvSize.text = "စာလုံးအရွယ် ${p + 15}"
+                editor.invalidate()
+            }
+
+            override fun onStartTrackingTouch(s: SeekBar?) {}
+            override fun onStopTrackingTouch(s: SeekBar?) = saveOverlay()
+        })
+        return col
+    }
+
+    private fun buildLogoPanel(): View {
+        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val bPick = smallBtn("🖼  Logo ရွေးမယ်")
+        val bDel = smallBtn("ဖယ်မယ်")
+        row.addView(bPick, lp(0, dp(36), 1f, r = 6))
+        row.addView(bDel, lp(dp(80), dp(36), r = 8))
+        val sw = newSwitch()
+        row.addView(sw, lp(WRAP, WRAP))
+        col.addView(row)
+        col.addView(smallLabel("Logo ကို preview ပေါ်မှာ ဆွဲရွှေ့ပြီး ထောင့်ကိုဆွဲရင် အကြီးအသေး ချိန်လို့ရတယ်"), lp(MATCH, WRAP, t = 6))
+        val tv = smallLabel("")
+        val sb = SeekBar(this).apply {
+            max = 90
+            progressTintList = ColorStateList.valueOf(C_ACCENT)
+            thumbTintList = ColorStateList.valueOf(C_PINK)
+        }
+        col.addView(tv, lp(MATCH, WRAP, t = 6))
+        col.addView(sb, lp(MATCH, WRAP))
+
+        refreshLogo = {
+            syncing = true
+            val l = overlay.logo
+            sw.isChecked = l.on
+            sb.progress = ((l.alpha * 100).toInt() - 10).coerceIn(0, 90)
+            tv.text = "ပွင့်လင်းမြင်ရမှု ${(l.alpha * 100).toInt()}%"
+            syncing = false
+        }
+        bPick.setOnClickListener { pickLogo.launch("image/*") }
+        bDel.setOnClickListener {
+            File(filesDir, "logo.png").delete()
+            overlay.logo.on = false
+            editor.logo = null
+            refreshLogo()
+            saveOverlay()
+        }
+        sw.setOnCheckedChangeListener { _, checked ->
+            if (syncing) return@setOnCheckedChangeListener
+            if (checked && !File(filesDir, "logo.png").exists()) {
+                syncing = true
+                sw.isChecked = false
+                syncing = false
+                pickLogo.launch("image/*")
+                return@setOnCheckedChangeListener
+            }
+            overlay.logo.on = checked
+            editor.selected = 4
+            editor.invalidate()
+            saveOverlay()
+        }
+        sb.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(s: SeekBar?, p: Int, fromUser: Boolean) {
+                if (syncing || !fromUser) return
+                overlay.logo.alpha = (p + 10) / 100f
+                tv.text = "ပွင့်လင်းမြင်ရမှု ${p + 10}%"
+                editor.invalidate()
+            }
+
+            override fun onStartTrackingTouch(s: SeekBar?) {}
+            override fun onStopTrackingTouch(s: SeekBar?) = saveOverlay()
+        })
+        return col
+    }
+
+    private fun showTab(i: Int) {
+        curTab = i
+        for ((k, pnl) in panels.withIndex()) pnl.visibility = if (k == i) View.VISIBLE else View.GONE
+        for ((k, b) in tabBtns.withIndex()) markSel(b, k == i)
+        when (i) {
+            0 -> {
+                editor.selected = curCover
+                refreshCover()
+            }
+            1 -> {
+                editor.selected = 3
+                refreshSub()
+            }
+            else -> {
+                editor.selected = 4
+                refreshLogo()
+            }
+        }
+    }
+
+    private fun buildEditorPage(): View {
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(C_BG1, C_BG2))
+        }
+        val bar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(8), dp(10), dp(16), dp(10))
+            val r = dp(18).toFloat()
+            background = GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, intArrayOf(C_CHAR, C_VIOLET, C_CHAR2)).apply {
+                cornerRadii = floatArrayOf(0f, 0f, 0f, 0f, r, r, r, r)
+            }
+        }
+        btnBack = TextView(this).apply {
+            text = "◀"
+            textSize = 20f
+            setTextColor(Color.WHITE)
+            setPadding(dp(12), dp(4), dp(14), dp(4))
+        }
+        bar.addView(btnBack, lp(WRAP, WRAP))
+        bar.addView(TextView(this).apply {
+            text = "Preview · ပြင်ဆင်ရန်"
+            textSize = 17f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.WHITE)
+        }, lp(0, WRAP, 1f))
+        root.addView(bar, LinearLayout.LayoutParams(MATCH, WRAP))
+
+        editor = EditorView(this, overlay).apply { background = rounded(Color.parseColor("#1B1730"), dp(14)) }
+        root.addView(editor, lp(MATCH, 0, 1f, l = 12, t = 8, r = 12))
+
+        // time slider
+        val timeRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(14), dp(2), dp(14), 0)
+        }
+        timeRow.addView(smallLabel("🎞 မူရင်းစာတန်းပေါ်တဲ့ အချိန်ကို ရွေး"), lp(WRAP, WRAP, r = 8))
+        sbTime = SeekBar(this).apply {
+            max = 1000
+            progress = 100
+            progressTintList = ColorStateList.valueOf(C_ACCENT)
+            thumbTintList = ColorStateList.valueOf(C_PINK)
+        }
+        timeRow.addView(sbTime, lp(0, WRAP, 1f))
+        tvTime = TextView(this).apply {
+            text = "00:00"
+            textSize = 12f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(C_ACCENT)
+        }
+        timeRow.addView(tvTime, lp(WRAP, WRAP, l = 6))
+        root.addView(timeRow, LinearLayout.LayoutParams(MATCH, WRAP))
+        sbTime.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(s: SeekBar?, p: Int, fromUser: Boolean) {
+                val ms = videoUri?.let { videoDurationMs(it) } ?: 0L
+                updateTimeLabel(ms)
+            }
+
+            override fun onStartTrackingTouch(s: SeekBar?) {}
+            override fun onStopTrackingTouch(s: SeekBar?) {
+                val u = videoUri ?: return
+                loadPreviewFrame(videoDurationMs(u) * sbTime.progress / 1000)
+            }
+        })
+
+        // tabs
+        val tabRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(dp(12), dp(6), dp(12), 0)
+        }
+        tabBtns = listOf("🟦  ဖုံးဘောင်", "📝  စာတန်း", "🖼  Logo").map { smallBtn(it) }
+        for ((i, b) in tabBtns.withIndex()) {
+            tabRow.addView(b, lp(0, dp(36), 1f, r = if (i < 2) 6 else 0))
+            b.setOnClickListener { showTab(i) }
+        }
+        root.addView(tabRow, LinearLayout.LayoutParams(MATCH, WRAP))
+
+        val panelBox = card()
+        val coverPanel = buildCoverPanel()
+        val subPanel = buildSubPanel()
+        val logoPanel = buildLogoPanel()
+        panels = listOf(coverPanel, subPanel, logoPanel)
+        panelBox.addView(coverPanel)
+        panelBox.addView(subPanel)
+        panelBox.addView(logoPanel)
+        val panelScroll = ScrollView(this).apply { addView(panelBox) }
+        root.addView(panelScroll, lp(MATCH, dp(172), l = 12, t = 6, r = 12))
+
+        editor.onSelect = { idx ->
+            when (idx) {
+                0, 1, 2 -> {
+                    curCover = idx
+                    showTab(0)
+                }
+                3 -> showTab(1)
+                else -> showTab(2)
+            }
+        }
+        editor.onChange = { saveOverlay() }
+
+        // generate row
+        val rowG = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        btnGenerate = styledButton("▶  Recap ဖန်တီးမယ်", true).apply {
+            textSize = 16f
+            isEnabled = false
+        }
+        rowG.addView(btnGenerate, lp(0, dp(52), 1f))
+        btnOpen = styledButton("ဖွင့်မယ်", false).apply { visibility = View.GONE }
+        rowG.addView(btnOpen, lp(WRAP, dp(52), l = 8))
+        root.addView(rowG, lp(MATCH, WRAP, l = 12, t = 8, r = 12))
+
+        progress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+            max = 100
+            progressTintList = ColorStateList.valueOf(C_ACCENT)
+            progressBackgroundTintList = ColorStateList.valueOf(Color.parseColor("#E4DBFF"))
+            visibility = View.INVISIBLE
+        }
+        root.addView(progress, lp(MATCH, dp(6), l = 12, t = 8, r = 12))
+
+        tvStatus = TextView(this).apply {
+            textSize = 12f
+            setTextColor(C_TEXT)
+            maxLines = 3
+            ellipsize = TextUtils.TruncateAt.END
+            minLines = 1
+        }
+        root.addView(tvStatus, lp(MATCH, WRAP, l = 14, t = 4, r = 14, b = 8))
+
+        showTab(0)
+        return root
+    }
+
+    private fun updateTimeLabel(movieMs: Long) {
+        val sec = (movieMs * sbTime.progress / 1000 / 1000).toInt()
+        tvTime.text = String.format(Locale.US, "%02d:%02d", sec / 60, sec % 60)
+    }
+
+    private fun loadPreviewFrame(ms: Long) {
+        val uri = videoUri ?: return
+        lifecycleScope.launch {
+            val bmp = withContext(Dispatchers.IO) {
+                try {
+                    val r = MediaMetadataRetriever()
+                    r.setDataSource(this@MainActivity, uri)
+                    var b = r.getFrameAtTime(ms * 1000, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                    r.release()
+                    if (b != null && maxOf(b.width, b.height) > 1100) {
+                        val sc = 1100f / maxOf(b.width, b.height)
+                        b = Bitmap.createScaledBitmap(b, (b.width * sc).toInt(), (b.height * sc).toInt(), true)
+                    }
+                    b
+                } catch (e: Exception) {
+                    null
+                }
+            }
+            if (bmp != null) editor.frame = bmp
+            else Toast.makeText(this@MainActivity, "Preview frame ယူလို့မရပါ", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun loadLogoBitmap() {
+        val f = File(filesDir, "logo.png")
+        editor.logo = if (f.exists()) BitmapFactory.decodeFile(f.absolutePath) else null
+    }
+
+    private fun showPage2() {
+        val uri = videoUri ?: return
+        savePrefs()
+        page1.visibility = View.GONE
+        page2.visibility = View.VISIBLE
+        updateModeButtons()
+        loadLogoBitmap()
+        if (previewUri != uri || editor.frame == null) {
+            previewUri = uri
+            val movieMs = videoDurationMs(uri)
+            sbTime.progress = 100
+            updateTimeLabel(movieMs)
+            loadPreviewFrame(movieMs * sbTime.progress / 1000)
+        }
+        showTab(curTab)
+    }
+
+    private fun showPage1() {
+        page2.visibility = View.GONE
+        page1.visibility = View.VISIBLE
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onBackPressed() {
+        if (page2.visibility == View.VISIBLE && !busy) showPage1() else super.onBackPressed()
+    }
+
+    // ----------------------------------------------- overlay for the final video
+    private fun videoDisplaySize(uri: Uri): Pair<Int, Int>? = try {
+        val r = MediaMetadataRetriever()
+        r.setDataSource(this, uri)
+        val w = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull()
+        val h = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull()
+        val rot = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.toIntOrNull() ?: 0
+        r.release()
+        if (w == null || h == null) null else if (rot == 90 || rot == 270) Pair(h, w) else Pair(w, h)
+    } catch (e: Exception) {
+        null
+    }
+
+    private fun prepareOverlay(uri: Uri): VideoMerger.OverlayPlan? {
+        val (fw, fh) = videoDisplaySize(uri) ?: return null
+        val (ow, oh) = OverlayRenderer.outSize(fw, fh)
+        cacheDir.listFiles()?.filter { it.name.startsWith("sub_") && it.name.endsWith(".png") }?.forEach { it.delete() }
+        val covers = overlay.covers.filter { it.on }
+        var logoPng: String? = null
+        val lf = File(filesDir, "logo.png")
+        if (overlay.logo.on && lf.exists()) {
+            val src = BitmapFactory.decodeFile(lf.absolutePath)
+            if (src != null) {
+                val lb = OverlayRenderer.logoBitmap(src, (overlay.logo.w * ow).toInt(), overlay.logo.alpha)
+                val out = File(cacheDir, "logo_ov.png")
+                FileOutputStream(out).use { lb.compress(Bitmap.CompressFormat.PNG, 100, it) }
+                logoPng = out.absolutePath
+            }
+        }
+        if (covers.isEmpty() && logoPng == null && !overlay.sub.on) return null
+        return VideoMerger.OverlayPlan(ow, oh, covers, logoPng, overlay.logo.x, overlay.logo.y, overlay.sub.x, overlay.sub.y)
+    }
+
+    /** စာကြောင်းတစ်ကြောင်းချင်း (။ ? !) ခွဲ၊ တိုလွန်းရင် ပေါင်း၊ ရှည်လွန်းရင် ၊ မှာ ဖြတ် */
+    private fun splitSentences(text: String, maxLen: Int = 150): List<String> {
+        val raw = text.split(Regex("(?<=[။?!])")).map { it.trim() }.filter { it.isNotEmpty() }
+        if (raw.isEmpty()) return listOf(text)
+        val merged = ArrayList<String>()
+        var carry = ""
+        for (sn in raw) {
+            val cur = if (carry.isEmpty()) sn else "$carry $sn"
+            if (cur.length < 14) carry = cur else {
+                merged.add(cur)
+                carry = ""
+            }
+        }
+        if (carry.isNotEmpty()) {
+            if (merged.isEmpty()) merged.add(carry) else merged[merged.size - 1] = merged.last() + " " + carry
+        }
+        val out = ArrayList<String>()
+        for (sn in merged) {
+            if (sn.length <= maxLen) {
+                out.add(sn)
+                continue
+            }
+            val parts = sn.split(Regex("(?<=[၊,;])")).map { it.trim() }.filter { it.isNotEmpty() }
+            var cur = StringBuilder()
+            for (pt in parts) {
+                if (cur.isNotEmpty() && cur.length + pt.length > maxLen) {
+                    out.add(cur.toString())
+                    cur = StringBuilder()
+                }
+                if (pt.length > maxLen) {
+                    pt.chunked(maxLen).forEach { out.add(it) }
+                } else {
+                    if (cur.isNotEmpty()) cur.append(' ')
+                    cur.append(pt)
+                }
+            }
+            if (cur.isNotEmpty()) out.add(cur.toString())
+        }
+        return out
+    }
+
+    /** စာကြောင်းတစ်ကြောင်းချင်း အသံထုတ် (စာတန်းထည့်ရင် အချိန်အတိအကျရဖို့) */
+    private suspend fun synthSentences(text: String, split: Boolean): List<Pair<String, ByteArray>> {
+        val sents = if (split) splitSentences(text) else listOf(text)
+        val out = ArrayList<Pair<String, ByteArray>>()
+        for (sn in sents) out.add(sn to synthSegmentPcm(sn))
+        return out
+    }
+
+    /** အသံကြာချိန်အတိအကျအတိုင်း စာတန်း PNG တွေ ထုတ်ပြီး cue (စ/ပြီး) စာရင်း ပြန်ပေး */
+    private fun makeCues(
+        sents: List<Pair<String, ByteArray>>,
+        headSec: Double,
+        segTag: Int,
+        plan: VideoMerger.OverlayPlan?
+    ): List<VideoMerger.SubCue> {
+        if (plan == null || !overlay.sub.on) return emptyList()
+        val cues = ArrayList<VideoMerger.SubCue>()
+        var t = headSec
+        for ((k, sp) in sents.withIndex()) {
+            val dur = sp.second.size / 48000.0
+            val bmp = OverlayRenderer.subtitleBitmap(
+                sp.first, overlay.sub,
+                (overlay.sub.w * plan.outW).toInt(), (overlay.sub.h * plan.outH).toInt(), plan.outH.toFloat()
+            )
+            val f = File(cacheDir, "sub_${segTag}_$k.png")
+            FileOutputStream(f).use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
+            bmp.recycle()
+            cues.add(VideoMerger.SubCue(f.absolutePath, t, t + dur + 0.05))
+            t += dur
+        }
+        return cues
+    }
+
     // ------------------------------------------------------------ lifecycle
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.statusBarColor = C_CHAR
         window.navigationBarColor = C_BG2
-        setContentView(buildUi())
+        overlay = OverlayConfig.parse(prefs.getString("overlay", null))
+        val rootFrame = FrameLayout(this)
+        page1 = buildUi()
+        page2 = buildEditorPage()
+        rootFrame.addView(page1, FrameLayout.LayoutParams(MATCH, MATCH))
+        rootFrame.addView(page2, FrameLayout.LayoutParams(MATCH, MATCH))
+        page2.visibility = View.GONE
+        setContentView(rootFrame)
 
         etApiKey.setText(prefs.getString("key", ""))
         applyKeyVisibility()
@@ -573,6 +1262,8 @@ class MainActivity : AppCompatActivity() {
 
         btnVideo.setOnClickListener { pickVideo.launch("video/*") }
         btnGenerate.setOnClickListener { startPipeline() }
+        btnNext.setOnClickListener { showPage2() }
+        btnBack.setOnClickListener { if (!busy) showPage1() }
         btnPreview.setOnClickListener { previewVoice() }
         btnSettings.setOnClickListener { showSettings() }
         btnOpen.setOnClickListener {
@@ -629,6 +1320,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun refreshButtons() {
         btnGenerate.isEnabled = !busy && videoUri != null
+        btnNext.isEnabled = !busy && videoUri != null
     }
 
     private fun savePrefs() {
@@ -641,6 +1333,7 @@ class MainActivity : AppCompatActivity() {
             .putBoolean("dub", dubMode)
             .putString("from", etFrom.text.toString().trim())
             .putString("to", etTo.text.toString().trim())
+            .putString("overlay", overlay.toJson())
             .apply()
     }
 
@@ -818,6 +1511,8 @@ class MainActivity : AppCompatActivity() {
         busy = b
         listOf<View>(btnVideo, btnPreview, spLang, spVoice, sbSpeed, sbPitch, btnSettings, etApiKey, btnModeRecap, btnModeDub)
             .forEach { it.isEnabled = !b }
+        btnBack.isEnabled = !b
+        editor.isEnabled = !b
         updateModeButtons()
         progress.visibility = if (b) View.VISIBLE else View.INVISIBLE
         if (b) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -1007,11 +1702,18 @@ class MainActivity : AppCompatActivity() {
 
         // 5) ခန်းတစ်ခုချင်း အသံထုတ်
         initEngine()
-        val pcms = ArrayList<ByteArray>()
+        val plan = withContext(Dispatchers.IO) { prepareOverlay(uri) }
+        val splitSubs = plan != null && overlay.sub.on
+        val sentLists = ArrayList<List<Pair<String, ByteArray>>>()
         for ((i, t) in texts.withIndex()) {
-            setStatus("၅/၆ မြန်မာအသံ ${i + 1}/${texts.size} [${engineLabel()}]")
+            setStatus("၅/၆ မြန်မာအသံ ${i + 1}/${texts.size} [${engineLabel()}]" + if (splitSubs) " · စာတန်း" else "")
             updateProgress((i * 100) / texts.size)
-            pcms.add(synthSegmentPcm(t))
+            sentLists.add(synthSentences(t, splitSubs))
+        }
+        val pcms = sentLists.map { l ->
+            val bo = ByteArrayOutputStream()
+            for (sp in l) bo.write(sp.second)
+            bo.toByteArray()
         }
 
         // 6) ရုပ်နဲ့အသံ အတိအကျကိုက်အောင် ချိန်ညှိပြီး ပေါင်း
@@ -1024,12 +1726,12 @@ class MainActivity : AppCompatActivity() {
                     (if (uniq < 8.0) " (မူရင်းကိုယ်တိုင် ထစ်တာ)" else "")
         } else ""
         setStatus("၆/၆ ရုပ်နဲ့အသံ ချိန်ညှိပြီး ပေါင်းနေပါတယ် — $srcNote")
-        val (clips, narrationPcm) = planScenes(scenes, pcms, movieMs)
+        val (clips, narrationPcm) = planScenes(scenes, pcms, movieMs, sentLists, plan)
         val narration = File(cacheDir, "narration.wav")
         VideoMerger.writeWav24k(narration, narrationPcm)
         val out = File(cacheDir, "recap_out.mp4")
         out.delete()
-        VideoMerger.merge(this, uri, narration, clips, out, smooth) { updateProgress(it) }
+        VideoMerger.merge(this, uri, narration, clips, out, smooth, plan) { updateProgress(it) }
 
         val where = withContext(Dispatchers.IO) { saveToMovies(out) }
         updateProgress(100)
@@ -1050,7 +1752,9 @@ class MainActivity : AppCompatActivity() {
     private fun planScenes(
         scenes: List<SceneSplitter.Scene>,
         pcms: List<ByteArray>,
-        movieMs: Long
+        movieMs: Long,
+        sentLists: List<List<Pair<String, ByteArray>>>,
+        plan: VideoMerger.OverlayPlan?
     ): Pair<List<VideoMerger.Clip>, ByteArray> {
         val minSp = 0.75
         val maxSp = 2.5
@@ -1078,7 +1782,8 @@ class MainActivity : AppCompatActivity() {
                     (sc.startSec * 1000).toLong(),
                     ((sc.startSec + srcLen) * 1000).toLong(),
                     speed.toFloat(),
-                    n
+                    n,
+                    makeCues(sentLists[i], 0.0, i, plan)
                 )
             )
 
@@ -1164,22 +1869,29 @@ class MainActivity : AppCompatActivity() {
 
         // 5) အသံ (တစ်ကြောင်းချင်း၊ ရွေးထားတဲ့ ဇာတ်ကောင်အသံ)
         initEngine()
-        val pcms = ArrayList<ByteArray>()
+        val plan = withContext(Dispatchers.IO) { prepareOverlay(uri) }
+        val splitSubs = plan != null && overlay.sub.on
+        val sentLists = ArrayList<List<Pair<String, ByteArray>>>()
         for ((i, t) in texts.withIndex()) {
-            setStatus("၅/၆ မြန်မာအသံ ${i + 1}/${texts.size} [${engineLabel()}]")
+            setStatus("၅/၆ မြန်မာအသံ ${i + 1}/${texts.size} [${engineLabel()}]" + if (splitSubs) " · စာတန်း" else "")
             updateProgress((i * 100) / texts.size)
-            pcms.add(synthSegmentPcm(t))
+            sentLists.add(synthSentences(t, splitSubs))
+        }
+        val pcms = sentLists.map { l ->
+            val bo = ByteArrayOutputStream()
+            for (sp in l) bo.write(sp.second)
+            bo.toByteArray()
         }
 
         // 6) ရုပ်နဲ့အသံ frame အတိအကျ ညှိပြီး ပေါင်း
         setStatus("၆/၆ ရုပ်နဲ့အသံ ချိန်ညှိပြီး ပေါင်းနေပါတယ်...")
         updateProgress(0)
-        val (clips, narrationPcm) = planDub(lines, pcms, fromSec, toSec, keepGaps, cuts, offsetSec)
+        val (clips, narrationPcm) = planDub(lines, pcms, fromSec, toSec, keepGaps, cuts, offsetSec, sentLists, plan)
         val narration = File(cacheDir, "narration.wav")
         VideoMerger.writeWav24k(narration, narrationPcm)
         val out = File(cacheDir, "recap_out.mp4")
         out.delete()
-        VideoMerger.merge(this, uri, narration, clips, out, prefs.getBoolean("smooth", false)) { updateProgress(it) }
+        VideoMerger.merge(this, uri, narration, clips, out, prefs.getBoolean("smooth", false), plan) { updateProgress(it) }
 
         val where = withContext(Dispatchers.IO) { saveToMovies(out) }
         updateProgress(100)
@@ -1205,7 +1917,9 @@ class MainActivity : AppCompatActivity() {
         toSec: Double,
         keepGaps: Boolean,
         cuts: List<Double>,
-        offsetSec: Double
+        offsetSec: Double,
+        sentLists: List<List<Pair<String, ByteArray>>>,
+        plan: VideoMerger.OverlayPlan?
     ): Pair<List<VideoMerger.Clip>, ByteArray> {
         val minSp = 0.3
         val maxSp = 2.5
@@ -1256,7 +1970,12 @@ class MainActivity : AppCompatActivity() {
             val audioFrames = Math.ceil(d * fps).toInt()
             val n = maxOf(Math.ceil(vidSec * fps).toInt(), headFrames + audioFrames).coerceAtLeast(1)
 
-            clips.add(VideoMerger.Clip((s * 1000).toLong(), (e * 1000).toLong(), speed.toFloat(), n))
+            clips.add(
+                VideoMerger.Clip(
+                    (s * 1000).toLong(), (e * 1000).toLong(), speed.toFloat(), n,
+                    makeCues(sentLists[i], headFrames / 30.0, i, plan)
+                )
+            )
 
             val total = n * 1600
             pcmOut.write(ByteArray(headFrames * 1600))
