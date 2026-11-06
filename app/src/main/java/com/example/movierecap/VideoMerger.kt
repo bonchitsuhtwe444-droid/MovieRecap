@@ -21,7 +21,28 @@ import kotlin.math.roundToInt
 object VideoMerger {
 
     /** frames > 0 ဆိုရင် output ကို frame အရေအတွက် အတိအကျ ပြုလုပ်ပေး (လိုရင် နောက်ဆုံးပုံကို ထိန်းပေး) */
-    data class Clip(val startMs: Long, val endMs: Long, val speed: Float = 1f, val frames: Int = 0)
+    /** စာတန်းတစ်ကြောင်း: PNG ပုံ + ဒီ clip ရဲ့ output အချိန်အတွင်း ပြမယ့် စက္ကန့် (စ/ပြီး) */
+    data class SubCue(val png: String, val startSec: Double, val endSec: Double)
+
+    data class Clip(
+        val startMs: Long,
+        val endMs: Long,
+        val speed: Float = 1f,
+        val frames: Int = 0,
+        val cues: List<SubCue> = emptyList()
+    )
+
+    /** video တစ်ခုလုံးမှာ အတူတူသုံးမယ့် overlay (ဖုံးဘောင်၊ logo၊ စာတန်းနေရာ) — နေရာအားလုံး frame အချိုး */
+    data class OverlayPlan(
+        val outW: Int,
+        val outH: Int,
+        val covers: List<CoverBox>,
+        val logoPng: String?,
+        val logoX: Float,
+        val logoY: Float,
+        val subX: Float,
+        val subY: Float
+    )
 
     @Volatile var lastEncoder: String = ""
 
@@ -50,7 +71,15 @@ object VideoMerger {
         return list
     }
 
-    private fun encodeSegment(context: Context, videoUri: Uri, c: Clip, outFile: File, enc: Enc, smooth: Boolean): Pair<Boolean, String> {
+    private fun encodeSegment(
+        context: Context,
+        videoUri: Uri,
+        c: Clip,
+        outFile: File,
+        enc: Enc,
+        smooth: Boolean,
+        plan: OverlayPlan?
+    ): Pair<Boolean, String> {
         val saf = FFmpegKitConfig.getSafParameterForRead(context, videoUri)
         val startSec = f(c.startMs / 1000.0)
         val lenSec = f((c.endMs - c.startMs) / 1000.0)
@@ -61,10 +90,66 @@ object VideoMerger {
             val padSec = c.frames / 30.0 + 1.0
             ",tpad=stop_mode=clone:stop_duration=${f(padSec)}"
         } else ""
-        val vf = "setpts=(PTS-STARTPTS)/${f(speed, 4)},$rateFilter$padFilter," +
+        val baseVf = "setpts=(PTS-STARTPTS)/${f(speed, 4)},$rateFilter$padFilter," +
                 "scale='if(gt(iw,ih),-2,720)':'if(gt(iw,ih),720,-2)',format=yuv420p"
+
         val args = ArrayList<String>()
-        args += listOf("-y", "-hide_banner", "-ss", startSec, "-t", lenSec, "-i", saf, "-an", "-sn", "-dn", "-vf", vf)
+        args += listOf("-y", "-hide_banner", "-ss", startSec, "-t", lenSec, "-i", saf)
+
+        val needGraph = plan != null && (plan.covers.isNotEmpty() || plan.logoPng != null || c.cues.isNotEmpty())
+        if (!needGraph || plan == null) {
+            args += listOf("-an", "-sn", "-dn", "-vf", baseVf)
+        } else {
+            val sb = StringBuilder()
+            sb.append("[0:v]").append(baseVf).append("[v0]")
+            val extra = ArrayList<String>()
+            var cur = "v0"
+            var step = 0
+            var inIdx = 1
+
+            for ((k, cv) in plan.covers.withIndex()) {
+                step++
+                val nxt = "v$step"
+                val cx = f(cv.x.toDouble(), 4)
+                val cy = f(cv.y.toDouble(), 4)
+                val cw = f(cv.w.toDouble(), 4)
+                val ch = f(cv.h.toDouble(), 4)
+                if (cv.mode == 2) {
+                    val regionMin = minOf(plan.outW * cv.w, plan.outH * cv.h)
+                    val rad = minOf(cv.blur, (regionMin / 4f).toInt()).coerceAtLeast(1)
+                    sb.append(";[$cur]split[a$k][b$k];")
+                    sb.append("[b$k]crop=iw*$cw:ih*$ch:iw*$cx:ih*$cy,boxblur=$rad:2[bl$k];")
+                    sb.append("[a$k][bl$k]overlay=x=W*$cx:y=H*$cy[$nxt]")
+                } else {
+                    val col = String.format(Locale.US, "0x%06X@%.2f", cv.color and 0xFFFFFF, cv.alpha.coerceIn(0f, 1f))
+                    sb.append(";[$cur]drawbox=x=iw*$cx:y=ih*$cy:w=iw*$cw:h=ih*$ch:color=$col:t=fill[$nxt]")
+                }
+                cur = nxt
+            }
+
+            if (plan.logoPng != null) {
+                extra.add(plan.logoPng)
+                step++
+                val nxt = "v$step"
+                sb.append(";[$cur][$inIdx:v]overlay=x=W*${f(plan.logoX.toDouble(), 4)}:y=H*${f(plan.logoY.toDouble(), 4)}[$nxt]")
+                cur = nxt
+                inIdx++
+            }
+
+            for (cue in c.cues) {
+                extra.add(cue.png)
+                step++
+                val nxt = "v$step"
+                sb.append(";[$cur][$inIdx:v]overlay=x=W*${f(plan.subX.toDouble(), 4)}:y=H*${f(plan.subY.toDouble(), 4)}")
+                sb.append(":enable='between(t,${f(cue.startSec)},${f(cue.endSec)})'[$nxt]")
+                cur = nxt
+                inIdx++
+            }
+
+            for (png in extra) args += listOf("-i", png)
+            args += listOf("-filter_complex", sb.toString(), "-map", "[$cur]", "-an", "-sn", "-dn")
+        }
+
         if (c.frames > 0) args += listOf("-frames:v", c.frames.toString())
         args += enc.args
         args += outFile.absolutePath
@@ -200,6 +285,7 @@ object VideoMerger {
         clips: List<Clip>,
         out: File,
         smooth: Boolean = false,
+        plan: OverlayPlan? = null,
         onProgress: (Int) -> Unit = {}
     ) {
         withContext(Dispatchers.IO) {
@@ -217,7 +303,7 @@ object VideoMerger {
                     var lastLog = ""
                     for (e in encoders) {
                         seg.delete()
-                        val (ok, log) = encodeSegment(context, videoUri, c, seg, e, smooth)
+                        val (ok, log) = encodeSegment(context, videoUri, c, seg, e, smooth, plan)
                         if (ok && seg.length() > 0) {
                             chosen = e
                             break
@@ -227,7 +313,7 @@ object VideoMerger {
                     if (chosen == null) throw IOException("FFmpeg encoder တစ်ခုမှ အလုပ်မလုပ်ပါ:\n$lastLog")
                     lastEncoder = chosen.name
                 } else {
-                    val (ok, log) = encodeSegment(context, videoUri, c, seg, chosen, smooth)
+                    val (ok, log) = encodeSegment(context, videoUri, c, seg, chosen, smooth, plan)
                     if (!ok || seg.length() == 0L) throw IOException("Scene ${i + 1}/${clips.size} ဖြတ်လို့မရပါ:\n$log")
                 }
                 segFiles.add(seg)
