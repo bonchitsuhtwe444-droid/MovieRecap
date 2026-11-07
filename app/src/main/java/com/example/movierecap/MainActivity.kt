@@ -631,11 +631,14 @@ class MainActivity : AppCompatActivity() {
 
         fun select(c: Int) {
             for ((i, v) in views.withIndex()) {
-                val on = colors[i] == c
+                val swatchColor = colors[i]
+                val on = swatchColor == c
+                val ring = dp(if (on) 3 else 1)
+                val ringColor = if (on) C_ACCENT else Color.parseColor("#C9C2E6")
                 v.background = GradientDrawable().apply {
                     shape = GradientDrawable.OVAL
-                    setColor(colors[i])
-                    setStroke(dp(if (on) 3 else 1), if (on) C_ACCENT else Color.parseColor("#C9C2E6"))
+                    setColor(swatchColor)
+                    setStroke(ring, ringColor)
                 }
             }
         }
